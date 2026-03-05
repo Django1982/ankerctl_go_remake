@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/django1982/ankerctl/internal/model"
+	"github.com/django1982/ankerctl/internal/service"
 )
 
 const (
@@ -40,6 +41,8 @@ type SnapshotCapturer interface {
 
 // NotificationService wires MQTT events to Apprise notifications.
 type NotificationService struct {
+	service.BaseWorker
+
 	cfg      ConfigLoader
 	mqtt     EventTapSource
 	snapshot SnapshotCapturer
@@ -54,7 +57,8 @@ type NotificationService struct {
 
 // NewNotificationService creates a notification bridge.
 func NewNotificationService(cfg ConfigLoader, mqtt EventTapSource, snapshot SnapshotCapturer) *NotificationService {
-	return &NotificationService{
+	s := &NotificationService{
+		BaseWorker:           service.NewBaseWorker("notifications"),
 		cfg:                  cfg,
 		mqtt:                 mqtt,
 		snapshot:             snapshot,
@@ -62,13 +66,21 @@ func NewNotificationService(cfg ConfigLoader, mqtt EventTapSource, snapshot Snap
 		lastFilename:         "-",
 		lastProgressNotified: -1,
 	}
+	s.BindHooks(s)
+	return s
 }
 
-// Start subscribes to MQTT events and sends notifications until ctx is cancelled.
-func (s *NotificationService) Start(ctx context.Context) error {
+func (s *NotificationService) WorkerInit() {}
+
+func (s *NotificationService) WorkerStart() error {
 	if s.mqtt == nil {
 		return fmt.Errorf("notifications: mqtt source is nil")
 	}
+	return nil
+}
+
+// WorkerRun subscribes to MQTT events and sends notifications until ctx is cancelled.
+func (s *NotificationService) WorkerRun(ctx context.Context) error {
 	events := make(chan any, 128)
 	unsub := s.mqtt.Tap(func(v any) {
 		select {
@@ -81,12 +93,14 @@ func (s *NotificationService) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil
 		case evt := <-events:
 			s.handleEvent(ctx, evt)
 		}
 	}
 }
+
+func (s *NotificationService) WorkerStop() {}
 
 // SendTestNotification sends a plain test message using a config snapshot.
 func SendTestNotification(ctx context.Context, apprise model.AppriseConfig, snapshot SnapshotCapturer) (bool, string) {

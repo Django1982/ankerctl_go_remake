@@ -181,6 +181,11 @@ func (s *PPPPService) SetLight(ctx context.Context, on bool) error {
 	return s.P2PCommand(ctx, protocol.P2PSubCmdLightStateSwitch, map[string]any{"open": on})
 }
 
+// Upload implements PPPPFileUploader interface (placeholder).
+func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byte, progress func(sent, total int64)) error {
+	return errors.New("ppppservice: file upload not yet implemented")
+}
+
 // WorkerStart establishes the PPPP client.
 func (s *PPPPService) WorkerStart() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

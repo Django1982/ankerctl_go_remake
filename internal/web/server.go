@@ -130,6 +130,13 @@ func WithServiceManager(svc *service.ServiceManager) Option {
 	}
 }
 
+// WithDevMode enables or disables development mode.
+func WithDevMode(dev bool) Option {
+	return func(s *Server) {
+		s.devMode = dev
+	}
+}
+
 // Start initializes and starts the HTTP server. It stops on context cancellation.
 func (s *Server) Start(ctx context.Context) error {
 	if err := s.initialize(); err != nil {

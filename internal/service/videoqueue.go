@@ -192,6 +192,14 @@ func (q *VideoQueue) LastFrameAt() time.Time {
 	return q.lastFrameAt
 }
 
+// SetLight toggles the printer camera light.
+func (q *VideoQueue) SetLight(ctx context.Context, on bool) error {
+	if q.lightController == nil {
+		return nil
+	}
+	return q.lightController.SetLight(ctx, on)
+}
+
 // CaptureSnapshot grabs one JPEG snapshot from the local /video endpoint.
 // It turns on printer light via MQTT/light-controller before capture.
 func (q *VideoQueue) CaptureSnapshot(ctx context.Context, outputPath string) error {
