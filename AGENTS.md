@@ -42,6 +42,12 @@ Git history follows a strict phase-based and task-based structure:
 - **Merging:** Merge into `main` only after full test verification (`go test ./...`).
 - **Hook enforcement:** Run `sh scripts/install-hooks.sh` once after cloning. Installs a `pre-commit` hook that hard-blocks direct commits to `main`.
 
+## Technical Integrity & Review (MANDATORY)
+- **Zero-Tolerance-Policy:** No unverified or unformatted code. All new logic MUST be backed by table-driven tests (protocol/crypto) or functional tests.
+- **Peer-Review-Pflicht:** Every implementation phase or significant feature branch MUST undergo a final cross-check by a second agent (e.g., Gemini CLI) before merging into `main`.
+- **Cross-Check Scope:** The reviewer must verify (1) layering compliance, (2) security mandates (no secrets in logs), (3) 1:1 parity with Python logic, and (4) bit-exactness of protocol/crypto implementations.
+- **Non-Interactive Execution:** Always use non-interactive flags (e.g., `git merge --no-edit`) for shell commands to prevent environment hangs.
+
 ## Security & Configuration Notes
 - Never log secrets (`auth_token`, `mqtt_key`, `api_key`).
 - Keep config handling compatible with existing defaults and permissions (config dir `0700`).

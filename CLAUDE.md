@@ -31,6 +31,14 @@ go test -run TestFunctionName ./internal/crypto/
 go vet ./...
 ```
 
+## Mandates (CRITICAL)
+
+- **Zero-Tolerance-Policy:** No unverified/untested code in `main`. All protocol/crypto logic MUST have table-driven tests.
+- **Peer-Review-Pflicht:** Feature branches MUST be cross-checked by another agent (Gemini CLI) for compliance (layering, security, bit-exactness) before merging.
+- **Security:** Never log `auth_token`, `mqtt_key`, or `api_key`. Use `logging.Redact()` for payloads.
+- **Layering:** Never import upward across internal package layers (see Architecture).
+- **Automation:** Prefer non-interactive commands (e.g., `git merge --no-edit`, `npm --yes`) to avoid hangs.
+
 ## Git Workflow (MANDATORY)
 
 To ensure a stable `main` branch and professional history:
