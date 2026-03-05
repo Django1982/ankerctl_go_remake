@@ -44,20 +44,23 @@ type NotificationService struct {
 	mqtt     EventTapSource
 	snapshot SnapshotCapturer
 
-	mu           sync.Mutex
-	lastState    int
-	lastFilename string
-	lastProgress int
+	mu                   sync.Mutex
+	lastState            int
+	lastFilename         string
+	lastProgress         int
+	lastProgressNotified int // last progress % that triggered a notification
+	progressSendCount    int // how many progress notifications sent this print
 }
 
 // NewNotificationService creates a notification bridge.
 func NewNotificationService(cfg ConfigLoader, mqtt EventTapSource, snapshot SnapshotCapturer) *NotificationService {
 	return &NotificationService{
-		cfg:          cfg,
-		mqtt:         mqtt,
-		snapshot:     snapshot,
-		lastState:    -1,
-		lastFilename: "-",
+		cfg:                  cfg,
+		mqtt:                 mqtt,
+		snapshot:             snapshot,
+		lastState:            -1,
+		lastFilename:         "-",
+		lastProgressNotified: -1,
 	}
 }
 
@@ -87,7 +90,8 @@ func (s *NotificationService) Start(ctx context.Context) error {
 
 // SendTestNotification sends a plain test message using a config snapshot.
 func SendTestNotification(ctx context.Context, apprise model.AppriseConfig, snapshot SnapshotCapturer) (bool, string) {
-	client := newClient(apprise)
+	resolved := ResolveAppriseEnv(apprise)
+	client := newClient(resolved)
 	if !client.IsConfigured() {
 		return false, "Apprise server URL or key missing"
 	}
@@ -110,6 +114,8 @@ func (s *NotificationService) handleEvent(ctx context.Context, evt any) {
 		s.mu.Lock()
 		s.lastProgress = p
 		s.mu.Unlock()
+		// Check if we should fire a progress notification.
+		s.maybeProgressNotification(ctx, p)
 	}
 
 	eventName, _ := payload["event"].(string)
@@ -121,6 +127,59 @@ func (s *NotificationService) handleEvent(ctx context.Context, evt any) {
 		return
 	}
 	s.handleStateTransition(ctx, state)
+}
+
+func (s *NotificationService) maybeProgressNotification(ctx context.Context, progress int) {
+	client := s.currentClient()
+	if client == nil || !client.IsEventEnabled(EventPrintProgress) {
+		return
+	}
+
+	interval := client.settings.Progress.IntervalPercent
+	if interval < 1 {
+		interval = 1
+	}
+	if interval > 100 {
+		interval = 100
+	}
+
+	s.mu.Lock()
+	lastNotified := s.lastProgressNotified
+	state := s.lastState
+	filename := s.lastFilename
+	sendCount := s.progressSendCount
+	maxValue := client.settings.Progress.MaxValue
+	s.mu.Unlock()
+
+	// Only send during an active print.
+	if state != mqttStatePrinting {
+		return
+	}
+
+	// Determine if we crossed an interval threshold.
+	nextThreshold := lastNotified + interval
+	if lastNotified < 0 {
+		nextThreshold = interval
+	}
+	if progress < nextThreshold {
+		return
+	}
+
+	// Check max_value cap.
+	if maxValue > 0 && sendCount >= maxValue {
+		return
+	}
+
+	s.mu.Lock()
+	s.lastProgressNotified = progress
+	s.progressSendCount++
+	s.mu.Unlock()
+
+	payload := map[string]any{
+		"filename": filename,
+		"percent":  progress,
+	}
+	s.send(ctx, EventPrintProgress, payload)
 }
 
 func (s *NotificationService) handleStateTransition(ctx context.Context, state int) {
@@ -145,6 +204,11 @@ func (s *NotificationService) handleStateTransition(ctx context.Context, state i
 			return
 		}
 		if prev != mqttStatePrinting {
+			// Reset progress tracking for new print.
+			s.mu.Lock()
+			s.lastProgressNotified = -1
+			s.progressSendCount = 0
+			s.mu.Unlock()
 			s.send(ctx, EventPrintStarted, payload)
 		}
 	case mqttStatePaused:
@@ -153,11 +217,21 @@ func (s *NotificationService) handleStateTransition(ctx context.Context, state i
 		}
 	case mqttStateIdle:
 		if prev == mqttStatePrinting || prev == mqttStatePaused {
+			// Reset progress tracking.
+			s.mu.Lock()
+			s.lastProgressNotified = -1
+			s.progressSendCount = 0
+			s.mu.Unlock()
 			s.send(ctx, EventPrintFinished, payload)
 		}
 	case mqttStateAborted:
 		if prev == mqttStatePrinting || prev == mqttStatePaused {
 			payload["reason"] = "aborted"
+			// Reset progress tracking.
+			s.mu.Lock()
+			s.lastProgressNotified = -1
+			s.progressSendCount = 0
+			s.mu.Unlock()
 			s.send(ctx, EventPrintFailed, payload)
 		}
 	}
@@ -180,7 +254,8 @@ func (s *NotificationService) currentClient() *Client {
 	if err != nil || cfg == nil {
 		return nil
 	}
-	return newClient(cfg.Notifications.Apprise)
+	resolved := ResolveAppriseEnv(cfg.Notifications.Apprise)
+	return newClient(resolved)
 }
 
 func maybeSnapshotAttachment(ctx context.Context, snapshot SnapshotCapturer) []string {
@@ -287,3 +362,4 @@ func asInt(v any) (int, bool) {
 		return 0, false
 	}
 }
+

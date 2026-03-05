@@ -25,6 +25,8 @@ type AppriseProgress struct {
 	IncludeImage     bool   `json:"include_image"`
 	SnapshotQuality  string `json:"snapshot_quality"`
 	SnapshotFallback bool   `json:"snapshot_fallback"`
+	SnapshotLight    bool   `json:"snapshot_light"`
+	MaxValue         int    `json:"max_value,omitempty"`
 }
 
 // AppriseTemplates holds notification message templates.

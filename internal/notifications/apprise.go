@@ -6,7 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +20,15 @@ import (
 )
 
 const defaultTimeout = 10 * time.Second
+
+// eventEnvOverrides maps event names to their env-var overrides.
+var eventEnvOverrides = map[string]string{
+	EventPrintStarted:  "APPRISE_EVENT_PRINT_STARTED",
+	EventPrintFinished: "APPRISE_EVENT_PRINT_FINISHED",
+	EventPrintFailed:   "APPRISE_EVENT_PRINT_FAILED",
+	EventGCodeUploaded: "APPRISE_EVENT_GCODE_UPLOADED",
+	EventPrintProgress: "APPRISE_EVENT_PRINT_PROGRESS",
+}
 
 // Client sends notifications to an Apprise API server.
 type Client struct {
@@ -29,6 +44,94 @@ func NewClient(settings model.AppriseConfig) *Client {
 			Timeout: defaultTimeout,
 		},
 	}
+}
+
+// ResolveAppriseEnv applies APPRISE_* environment variable overrides to a config,
+// matching Python's AppriseClient._resolve_settings().
+func ResolveAppriseEnv(cfg model.AppriseConfig) model.AppriseConfig {
+	if v, ok := readBoolEnv("APPRISE_ENABLED"); ok {
+		cfg.Enabled = v
+	}
+	if v := os.Getenv("APPRISE_SERVER_URL"); v != "" {
+		cfg.ServerURL = v
+	}
+	if v := os.Getenv("APPRISE_KEY"); v != "" {
+		cfg.Key = v
+	}
+	if v := os.Getenv("APPRISE_TAG"); v != "" {
+		cfg.Tag = v
+	}
+
+	// Event overrides
+	for event, envVar := range eventEnvOverrides {
+		if v, ok := readBoolEnv(envVar); ok {
+			switch event {
+			case EventPrintStarted:
+				cfg.Events.PrintStarted = v
+			case EventPrintFinished:
+				cfg.Events.PrintFinished = v
+			case EventPrintFailed:
+				cfg.Events.PrintFailed = v
+			case EventGCodeUploaded:
+				cfg.Events.GcodeUploaded = v
+			case EventPrintProgress:
+				cfg.Events.PrintProgress = v
+			}
+		}
+	}
+
+	// Progress overrides
+	if v, ok := readIntEnv("APPRISE_PROGRESS_INTERVAL"); ok {
+		cfg.Progress.IntervalPercent = v
+	}
+	if v, ok := readBoolEnv("APPRISE_PROGRESS_INCLUDE_IMAGE"); ok {
+		cfg.Progress.IncludeImage = v
+	}
+	if v := os.Getenv("APPRISE_SNAPSHOT_QUALITY"); v != "" {
+		cfg.Progress.SnapshotQuality = v
+	}
+	if v, ok := readBoolEnv("APPRISE_SNAPSHOT_FALLBACK"); ok {
+		cfg.Progress.SnapshotFallback = v
+	}
+	if v, ok := readBoolEnv("APPRISE_SNAPSHOT_LIGHT"); ok {
+		cfg.Progress.SnapshotLight = v
+	}
+	if v, ok := readIntEnv("APPRISE_PROGRESS_MAX"); ok {
+		cfg.Progress.MaxValue = v
+	}
+
+	return cfg
+}
+
+// readBoolEnv reads an env var as bool, returning (value, found).
+func readBoolEnv(key string) (bool, bool) {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return false, false
+	}
+	switch raw {
+	case "1", "true", "yes", "on", "y", "t":
+		return true, true
+	case "0", "false", "no", "off", "n", "f":
+		return false, true
+	default:
+		slog.Warn("Ignoring unsupported env var value", "var", key, "value", raw)
+		return false, false
+	}
+}
+
+// readIntEnv reads an env var as int, returning (value, found).
+func readIntEnv(key string) (int, bool) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("Ignoring unsupported env var value", "var", key, "value", raw)
+		return 0, false
+	}
+	return v, true
 }
 
 // IsConfigured reports whether URL + key are present.
@@ -78,6 +181,8 @@ func (c *Client) SendEvent(ctx context.Context, event string, payload map[string
 }
 
 // Post sends a raw notification payload.
+// Attachments that are local file paths are uploaded as multipart/form-data.
+// Other attachments (data URIs, URLs) are sent inline as JSON.
 func (c *Client) Post(ctx context.Context, title, body, typ string, attachments []string) (bool, string) {
 	if !c.IsConfigured() {
 		return false, "Apprise server URL or key missing"
@@ -87,6 +192,31 @@ func (c *Client) Post(ctx context.Context, title, body, typ string, attachments 
 		return false, "Apprise server URL or key missing"
 	}
 
+	// Separate local file paths from inline attachments (data URIs, URLs).
+	var localFiles, inlineAttach []string
+	for _, a := range attachments {
+		if a == "" {
+			continue
+		}
+		if strings.HasPrefix(a, "data:") || strings.HasPrefix(a, "http://") || strings.HasPrefix(a, "https://") {
+			inlineAttach = append(inlineAttach, a)
+		} else if _, err := os.Stat(a); err == nil {
+			localFiles = append(localFiles, a)
+		} else {
+			inlineAttach = append(inlineAttach, a)
+		}
+	}
+
+	// If we have local files, try multipart upload first (Python _post_with_attachments).
+	if len(localFiles) > 0 {
+		ok, msg, tried := c.postMultipart(ctx, url, title, body, typ, localFiles)
+		if tried {
+			return ok, msg
+		}
+		// Fall through to JSON if multipart failed to build.
+	}
+
+	// JSON payload path.
 	payload := map[string]any{
 		"title": title,
 		"body":  body,
@@ -95,8 +225,8 @@ func (c *Client) Post(ctx context.Context, title, body, typ string, attachments 
 	if tag := strings.TrimSpace(c.settings.Tag); tag != "" {
 		payload["tag"] = tag
 	}
-	if len(attachments) > 0 {
-		payload["attach"] = attachments
+	if len(inlineAttach) > 0 {
+		payload["attach"] = inlineAttach
 	}
 
 	bodyJSON, err := json.Marshal(payload)
@@ -120,6 +250,62 @@ func (c *Client) Post(ctx context.Context, title, body, typ string, attachments 
 	defer resp.Body.Close()
 
 	return parseResponse(resp)
+}
+
+// postMultipart uploads local files as multipart/form-data.
+// Returns (ok, msg, tried) where tried=false means the caller should fall through.
+func (c *Client) postMultipart(ctx context.Context, url, title, body, typ string, files []string) (bool, string, bool) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	_ = writer.WriteField("title", title)
+	_ = writer.WriteField("body", body)
+	_ = writer.WriteField("type", typ)
+	if tag := strings.TrimSpace(c.settings.Tag); tag != "" {
+		_ = writer.WriteField("tag", tag)
+	}
+
+	attachCount := 0
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			slog.Warn("Apprise attachment not found", "path", path, "error", err)
+			continue
+		}
+		attachCount++
+		fieldName := fmt.Sprintf("attach%d", attachCount)
+		part, err := writer.CreateFormFile(fieldName, filepath.Base(path))
+		if err != nil {
+			f.Close()
+			continue
+		}
+		_, _ = io.Copy(part, f)
+		f.Close()
+	}
+
+	if attachCount == 0 {
+		return false, "", false // No files added, fall through to JSON.
+	}
+
+	_ = writer.Close()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
+	if err != nil {
+		return false, fmt.Sprintf("build multipart request: %v", err), true
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, ctx.Err().Error(), true
+		}
+		return false, err.Error(), true
+	}
+	defer resp.Body.Close()
+
+	ok, msg := parseResponse(resp)
+	return ok, msg, true
 }
 
 func parseResponse(resp *http.Response) (bool, string) {
