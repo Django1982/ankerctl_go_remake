@@ -1,0 +1,48 @@
+# Binaries
+ankerctl
+ankerctl.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build and Tooling
+bin/
+obj/
+dist/
+vendor/
+
+# Databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+ankerctl.log
+
+# Local/Agent configs
+.claude/
+.gemini/
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*~

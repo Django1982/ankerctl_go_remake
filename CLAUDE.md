@@ -31,6 +31,14 @@ go test -run TestFunctionName ./internal/crypto/
 go vet ./...
 ```
 
+## Git Workflow (MANDATORY)
+
+To ensure a stable `main` branch and professional history:
+1. **Branching:** Create a new branch for every task: `git checkout -b <branch-name>`.
+2. **Atomic Commits:** Commit often, but only one logical change per commit.
+3. **Merging:** Only merge into `main` after verifying the implementation with tests.
+4. **Messages:** Use imperative, concise commit subjects (e.g., `fix(mqtt): redact secrets in logs`).
+
 ## Architecture
 
 ### Package Dependency Order

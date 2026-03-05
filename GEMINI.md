@@ -57,6 +57,12 @@ Background operations are managed by a `ServiceManager` (`internal/service/manag
 - **Formatting:** `gofmt` is mandatory.
 - **Testing:** Table-driven tests are preferred, especially for protocol parsing and crypto logic.
 
+### Git Workflow & Branching (MANDATORY)
+To ensure project stability and a clean history:
+1. **Branching:** Never work directly on the `main` branch. Create a feature branch for every task: `git checkout -b <branch-name>`.
+2. **Atomic Commits:** Each commit must represent exactly ONE logical change or sub-task. Use clear, imperative commit messages (e.g., `feat(httpapi): implement ECDH login`).
+3. **Merging:** Only merge back into `main` after all tests (`go test ./...`) pass and implementation is verified.
+
 ### Migration Status
 Refer to `MIGRATION_PLAN.md` for the full 16-phase roadmap. 
 - **Completed:** Phase 1-4, 6, 8, 9, 11, 12.

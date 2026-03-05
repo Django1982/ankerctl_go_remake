@@ -34,12 +34,12 @@ Use these from repository root:
 - For new logic, include positive, negative, and edge-case coverage.
 
 ## Commit & Pull Request Guidelines
-Git history is currently minimal (`Initial commit`), so use consistent conventions going forward:
+Git history follows a strict phase-based and task-based structure:
 
-- Commit subjects: imperative, concise, <= 72 chars (example: `web: enforce API key on debug routes`).
-- Keep commits scoped to one logical change.
-- PRs should include: purpose, key changes, test evidence (`go test ./...` output summary), and linked issue/task.
-- For UI/API behavior changes, include screenshots or sample request/response snippets.
+- **Branching (MANDATORY):** Never work on `main`. Create a feature branch: `git checkout -b <branch-name>`.
+- **Atomic Commits:** One logical change per commit.
+- **Commit subjects:** imperative, concise, <= 72 chars (example: `web: enforce API key on debug routes`).
+- **Merging:** Merge into `main` only after full test verification (`go test ./...`).
 
 ## Security & Configuration Notes
 - Never log secrets (`auth_token`, `mqtt_key`, `api_key`).
