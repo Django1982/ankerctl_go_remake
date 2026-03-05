@@ -73,6 +73,7 @@ type MqttQueue struct {
 	gcodeLayerCount    int
 	debugLogging       bool
 	lastStatePayload   map[string]any
+	bedLevelingGrid    map[string]any
 
 	homeAssistant eventSink
 	timelapse     eventSink
@@ -89,6 +90,7 @@ func NewMqttQueue(cfg *config.Manager, printerIndex int, history *db.DB, ha even
 		currentPrinterStat: -1,
 		homeAssistant:      ha,
 		timelapse:          timelapse,
+		bedLevelingGrid:    make(map[string]any),
 	}
 	q.clientFactory = defaultMQTTClientFactory(cfg, printerIndex)
 	q.BindHooks(q)
@@ -259,6 +261,16 @@ func (q *MqttQueue) handlePayload(obj map[string]any) {
 	if progress, ok := extractProgress(obj); ok {
 		normalized["progress"] = normalizeProgress(progress)
 	}
+
+	// Capture bed leveling grid if present.
+	if ct == int(protocol.MqttCmdAutoLeveling) {
+		if grid, ok := obj["grid"].(map[string]any); ok {
+			q.mu.Lock()
+			q.bedLevelingGrid = cloneMap(grid)
+			q.mu.Unlock()
+		}
+	}
+
 	if q.debugLogging {
 		q.log.Debug("mqtt payload", "payload", logging.Redact(normalized))
 	}
@@ -482,6 +494,31 @@ func (q *MqttQueue) SetDebugLogging(enabled bool) {
 	q.mu.Lock()
 	q.debugLogging = enabled
 	q.mu.Unlock()
+}
+
+// LastBedLevelingGrid returns the most recently received leveling grid.
+func (q *MqttQueue) LastBedLevelingGrid() map[string]any {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return cloneMap(q.bedLevelingGrid)
+}
+
+// QueryBedLeveling triggers a status query to refresh bed leveling data.
+func (q *MqttQueue) QueryBedLeveling(ctx context.Context) error {
+	q.mu.Lock()
+	c := q.client
+	q.mu.Unlock()
+	if c == nil {
+		return errors.New("mqttqueue: mqtt client not connected")
+	}
+	cmd := map[string]any{
+		"commandType": int(protocol.MqttCmdAutoLeveling),
+		"value":       0, // value=0 is usually a query in Anker protocol
+	}
+	if err := c.Query(ctx, cmd); err != nil {
+		return fmt.Errorf("mqttqueue: query bed leveling: %w", err)
+	}
+	return nil
 }
 
 // SimulateEvent emits a synthetic event to subscribers and forwarding sinks.

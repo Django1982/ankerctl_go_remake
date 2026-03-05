@@ -3,13 +3,30 @@ package handler
 import "net/http"
 
 // BedLevelingLive queries bed-leveling data from printer.
-func (h *Handler) BedLevelingLive(w http.ResponseWriter, _ *http.Request) {
-	// TODO(phase-13): implement short-lived MQTT query and BL-Grid parsing.
-	h.writeError(w, http.StatusNotImplemented, "bed leveling read not implemented")
+func (h *Handler) BedLevelingLive(w http.ResponseWriter, r *http.Request) {
+	q, ok := h.mqttQueue()
+	if !ok {
+		h.writeError(w, http.StatusServiceUnavailable, "mqtt service not available")
+		return
+	}
+	if err := q.QueryBedLeveling(r.Context()); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to query bed leveling: "+err.Error())
+		return
+	}
+	h.writeJSON(w, http.StatusOK, map[string]string{"status": "query sent"})
 }
 
 // BedLevelingLast returns most recent persisted bed-leveling grid.
 func (h *Handler) BedLevelingLast(w http.ResponseWriter, _ *http.Request) {
-	// TODO(phase-13): implement persisted .bed lookup.
-	h.writeError(w, http.StatusNotImplemented, "bed leveling history not implemented")
+	q, ok := h.mqttQueue()
+	if !ok {
+		h.writeError(w, http.StatusServiceUnavailable, "mqtt service not available")
+		return
+	}
+	grid := q.LastBedLevelingGrid()
+	if len(grid) == 0 {
+		h.writeError(w, http.StatusNotFound, "no bed leveling data available")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, grid)
 }

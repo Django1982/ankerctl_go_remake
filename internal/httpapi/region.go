@@ -16,7 +16,7 @@ var Dialer = func(network, addr string, timeout time.Duration) (net.Conn, error)
 }
 
 // GuessRegion determines the closest Anker cloud region by measuring
-// TCP connect time to each host. Returns the region key ("eu" or "us").
+// TCP connect time to each host in parallel. Returns the region key ("eu" or "us").
 // Python: AnkerHTTPApi.guess_region()
 func GuessRegion() string {
 	type result struct {
@@ -24,17 +24,21 @@ func GuessRegion() string {
 		duration time.Duration
 	}
 
-	results := make([]result, 0, len(hostsByRegion))
+	resChan := make(chan result, len(hostsByRegion))
+
 	for region, host := range hostsByRegion {
-		d := measureConnectTime(host, 443)
-		results = append(results, result{region: region, duration: d})
-		slog.Debug("region probe", "region", region, "host", host, "latency", d)
+		go func(r, h string) {
+			d := measureConnectTime(h, 443)
+			resChan <- result{region: r, duration: d}
+		}(region, host)
 	}
 
-	best := results[0]
-	for _, r := range results[1:] {
-		if r.duration < best.duration {
-			best = r
+	best := result{duration: regionConnectTimeout + time.Second}
+	for i := 0; i < len(hostsByRegion); i++ {
+		res := <-resChan
+		slog.Debug("region probe", "region", res.region, "latency", res.duration)
+		if res.duration < best.duration {
+			best = res
 		}
 	}
 
