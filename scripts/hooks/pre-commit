@@ -1,0 +1,10 @@
+#!/bin/sh
+# Prevents direct commits to the main branch.
+# Install via: scripts/install-hooks.sh
+
+branch=$(git symbolic-ref HEAD 2>/dev/null)
+if [ "$branch" = "refs/heads/main" ]; then
+  echo "ERROR: Direct commits to main are forbidden."
+  echo "Create a feature branch first: git checkout -b <branch-name>"
+  exit 1
+fi

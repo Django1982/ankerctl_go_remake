@@ -39,6 +39,8 @@ To ensure a stable `main` branch and professional history:
 3. **Merging:** Only merge into `main` after verifying the implementation with tests.
 4. **Messages:** Use imperative, concise commit subjects (e.g., `fix(mqtt): redact secrets in logs`).
 
+**Hook enforcement:** After cloning, run `sh scripts/install-hooks.sh` once. This installs a `pre-commit` hook that hard-blocks direct commits to `main`.
+
 ## Architecture
 
 ### Package Dependency Order

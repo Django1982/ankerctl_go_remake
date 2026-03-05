@@ -40,6 +40,7 @@ Git history follows a strict phase-based and task-based structure:
 - **Atomic Commits:** One logical change per commit.
 - **Commit subjects:** imperative, concise, <= 72 chars (example: `web: enforce API key on debug routes`).
 - **Merging:** Merge into `main` only after full test verification (`go test ./...`).
+- **Hook enforcement:** Run `sh scripts/install-hooks.sh` once after cloning. Installs a `pre-commit` hook that hard-blocks direct commits to `main`.
 
 ## Security & Configuration Notes
 - Never log secrets (`auth_token`, `mqtt_key`, `api_key`).

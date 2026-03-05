@@ -63,6 +63,8 @@ To ensure project stability and a clean history:
 2. **Atomic Commits:** Each commit must represent exactly ONE logical change or sub-task. Use clear, imperative commit messages (e.g., `feat(httpapi): implement ECDH login`).
 3. **Merging:** Only merge back into `main` after all tests (`go test ./...`) pass and implementation is verified.
 
+**Hook enforcement:** Run `sh scripts/install-hooks.sh` once after cloning. This installs a `pre-commit` hook that hard-blocks direct commits to `main`.
+
 ### Migration Status
 Refer to `MIGRATION_PLAN.md` for the full 16-phase roadmap. 
 - **Completed:** Phase 1-4, 6, 8, 9, 11, 12.
