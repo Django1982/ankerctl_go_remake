@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/django1982/ankerctl/internal/config"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
+	"github.com/google/uuid"
 )
 
 type ppppConn interface {
@@ -39,6 +41,7 @@ type PPPPService struct {
 	handlersMu sync.RWMutex
 	handlers   map[byte][]func([]byte)
 	videoHandlers []func(protocol.VideoFrame)
+	aabbHandlers  map[byte][]func(protocol.Aabb, []byte)
 }
 
 // NewPPPPService creates a PPPP service.
@@ -48,6 +51,7 @@ func NewPPPPService(cfg *config.Manager, printerIndex int) *PPPPService {
 		log:          slog.With("service", "ppppservice"),
 		pollInterval: 50 * time.Millisecond,
 		handlers:     make(map[byte][]func([]byte)),
+		aabbHandlers: make(map[byte][]func(protocol.Aabb, []byte)),
 	}
 	s.clientFactor = defaultPPPPClientFactory(cfg, printerIndex)
 	s.BindHooks(s)
@@ -117,6 +121,16 @@ func (s *PPPPService) RegisterVideoHandler(fn func(protocol.VideoFrame)) {
 	s.handlersMu.Unlock()
 }
 
+// RegisterAabbHandler registers a handler for AABB frames on the given channel.
+func (s *PPPPService) RegisterAabbHandler(channel byte, fn func(protocol.Aabb, []byte)) {
+	if fn == nil {
+		return
+	}
+	s.handlersMu.Lock()
+	s.aabbHandlers[channel] = append(s.aabbHandlers[channel], fn)
+	s.handlersMu.Unlock()
+}
+
 // P2PCommand sends a JSON-wrapped P2P command on channel 0.
 func (s *PPPPService) P2PCommand(ctx context.Context, subCmd protocol.P2PSubCmdType, payload any) error {
 	cli := s.currentClient()
@@ -181,9 +195,144 @@ func (s *PPPPService) SetLight(ctx context.Context, on bool) error {
 	return s.P2PCommand(ctx, protocol.P2PSubCmdLightStateSwitch, map[string]any{"open": on})
 }
 
-// Upload implements PPPPFileUploader interface (placeholder).
+// Upload implements PPPPFileUploader interface.
 func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byte, progress func(sent, total int64)) error {
-	return errors.New("ppppservice: file upload not yet implemented")
+	cli := s.currentClient()
+	if cli == nil {
+		return errors.New("ppppservice: no client")
+	}
+	ch, err := cli.Channel(1)
+	if err != nil {
+		return err
+	}
+
+	replyCh := make(chan error, 1)
+	handlerIdx := byte(1) // we listen on channel 1
+
+	// Set up temporary reply tap
+	s.handlersMu.Lock()
+	wrapper := func(aabb protocol.Aabb, data []byte) {
+		if len(data) != 1 {
+			select {
+			case replyCh <- fmt.Errorf("unexpected aabb reply len %d", len(data)):
+			default:
+			}
+			return
+		}
+		if data[0] != 0 { // 0 = OK
+			select {
+			case replyCh <- fmt.Errorf("aabb reply error code: %d", data[0]):
+			default:
+			}
+			return
+		}
+		select {
+		case replyCh <- nil:
+		default:
+		}
+	}
+	// Note: We are appending this and not removing it properly in this simple implementation
+	// For production, we should probably add a way to remove the handler or use a single persistent router.
+	// But let's assume one concurrent upload for now.
+	s.aabbHandlers[handlerIdx] = append(s.aabbHandlers[handlerIdx], wrapper)
+	s.handlersMu.Unlock()
+
+	defer func() {
+		s.handlersMu.Lock()
+		s.aabbHandlers[handlerIdx] = nil // Reset handlers for now (assumes exclusive use)
+		s.handlersMu.Unlock()
+	}()
+
+	waitReply := func() error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(15 * time.Second):
+			return errors.New("timeout waiting for aabb reply")
+		case err := <-replyCh:
+			return err
+		}
+	}
+
+	// 1. Send XZYH P2P_SEND_FILE
+	uid := uuid.NewString()[:16]
+	x := protocol.Xzyh{
+		Cmd:  protocol.P2PCmdP2pSendFile,
+		Chan: 1,
+		Data: []byte(uid),
+	}
+	xb, err := x.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	if _, _, err := ch.Write(xb, true); err != nil {
+		return fmt.Errorf("write send_file req: %w", err)
+	}
+
+	// 2. Prepare metadata string
+	// format: "type,name,size,md5,user_name,user_id,machine_id"
+	h := md5.Sum(payload)
+	md5Str := fmt.Sprintf("%x", h)
+	meta := fmt.Sprintf("0,%s,%d,%s,%s,%s,%s", info.Name, info.Size, md5Str, info.UserName, info.UserID, info.MachineID)
+	metaData := append([]byte(meta), 0)
+
+	// 3. Send BEGIN
+	begin := protocol.Aabb{FrameType: protocol.FileTransferBegin}
+	bp, err := begin.PackWithCRC(metaData)
+	if err != nil {
+		return err
+	}
+	if _, _, err := ch.Write(bp, true); err != nil {
+		return fmt.Errorf("write aabb begin: %w", err)
+	}
+
+	// Wait for reply? Python says self.api_aabb_request(api, FileTransfer.DATA...)
+	// Wait, Python's send_file uses api_aabb for BEGIN (no wait), then api_aabb_request for DATA (wait).
+	// Let's just follow Python: no wait for BEGIN.
+
+	// 4. Send DATA
+	blockSize := 1024 * 32
+	var pos int64
+	for pos < info.Size {
+		end := pos + int64(blockSize)
+		if end > info.Size {
+			end = info.Size
+		}
+		chunk := payload[pos:end]
+
+		dataAabb := protocol.Aabb{
+			FrameType: protocol.FileTransferData,
+			Pos:       uint32(pos),
+		}
+		dp, err := dataAabb.PackWithCRC(chunk)
+		if err != nil {
+			return err
+		}
+		if _, _, err := ch.Write(dp, true); err != nil {
+			return fmt.Errorf("write aabb data at %d: %w", pos, err)
+		}
+
+		if err := waitReply(); err != nil {
+			return fmt.Errorf("aabb data reply at %d: %w", pos, err)
+		}
+
+		pos = end
+		if progress != nil {
+			progress(pos, info.Size)
+		}
+	}
+
+	// 5. Send END
+	endAabb := protocol.Aabb{FrameType: protocol.FileTransferEnd}
+	ep, err := endAabb.PackWithCRC([]byte{})
+	if err != nil {
+		return err
+	}
+	if _, _, err := ch.Write(ep, true); err != nil {
+		return fmt.Errorf("write aabb end: %w", err)
+	}
+
+	return waitReply()
 }
 
 // WorkerStart establishes the PPPP client.
@@ -287,6 +436,26 @@ func (s *PPPPService) drainXzyh(channel byte, ch *protocol.Channel) error {
 		if len(header) == 0 {
 			return nil
 		}
+
+		if header[0] == 0xAA && header[1] == 0xBB {
+			if len(header) < 12 {
+				return nil
+			}
+			sz := int(binary.LittleEndian.Uint32(header[8:12]))
+			need := 12 + sz + 2
+			frame := ch.Read(need, 0)
+			if len(frame) == 0 {
+				return nil
+			}
+			aabb, data, err := protocol.ParseAabbWithCRC(frame)
+			if err != nil {
+				s.log.Warn("aabb parse failed", "err", err)
+				continue
+			}
+			s.dispatchAabb(channel, aabb, data)
+			continue
+		}
+
 		if string(header[:4]) != "XZYH" {
 			_ = ch.Read(1, 0)
 			continue
@@ -332,5 +501,16 @@ func (s *PPPPService) dispatchVideo(vf protocol.VideoFrame) {
 
 	for _, h := range handlers {
 		h(vf)
+	}
+}
+
+func (s *PPPPService) dispatchAabb(channel byte, aabb protocol.Aabb, data []byte) {
+	s.handlersMu.RLock()
+	handlers := append([]func(protocol.Aabb, []byte){}, s.aabbHandlers[channel]...)
+	s.handlersMu.RUnlock()
+
+	for _, h := range handlers {
+		payloadCopy := append([]byte(nil), data...)
+		h(aabb, payloadCopy)
 	}
 }

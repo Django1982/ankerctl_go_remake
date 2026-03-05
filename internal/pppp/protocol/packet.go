@@ -149,6 +149,7 @@ const (
 	P2PCmdStopRealtimeMedia  P2PCmdType = 0x03EC
 	P2PCmdVideoFrame         P2PCmdType = 0x0514
 	P2PCmdP2pJson            P2PCmdType = 0x06A4
+	P2PCmdP2pSendFile        P2PCmdType = 0x3A98
 )
 
 // P2PSubCmdType is used for API commands inside XZYH payloads.

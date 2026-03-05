@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,8 +20,9 @@ import (
 )
 
 var (
-	configDir string
-	devMode   bool
+	configDir  string
+	devMode    bool
+	printerIdx int
 )
 
 func main() {
@@ -35,7 +37,10 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&configDir, "config", defaultDir(), "Configuration directory")
 	rootCmd.PersistentFlags().BoolVar(&devMode, "dev", false, "Enable development mode")
 
-	rootCmd.AddCommand(newWebserverCmd())
+	webCmd := newWebserverCmd()
+	webCmd.Flags().IntVar(&printerIdx, "printer-index", 0, "Index of the printer to monitor (0-based)")
+	rootCmd.AddCommand(webCmd)
+
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newVersionCmd())
 
@@ -57,6 +62,12 @@ func newWebserverCmd() *cobra.Command {
 		Use:   "webserver",
 		Short: "Manage the web interface",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Allow overriding via environment variable
+			if envIdx := os.Getenv("PRINTER_INDEX"); envIdx != "" {
+				if parsed, err := strconv.Atoi(envIdx); err == nil {
+					printerIdx = parsed
+				}
+			}
 			return runWebserver()
 		},
 	}
@@ -87,32 +98,22 @@ func runWebserver() error {
 	sm := service.NewServiceManager()
 
 	// 4. Services
-	printerIdx := 0
-
-	// PPPP needs to be created first
+	// Background services monitor the printer specified by printerIdx.
 	pppp := service.NewPPPPService(cfgMgr, printerIdx)
 	sm.Register(pppp)
 
-	// Video needs PPPP
 	video := service.NewVideoQueue(pppp, pppp)
 	sm.Register(video)
 
-	// Timelapse needs Video
 	timelapse := service.NewTimelapseService(filepath.Join(configDir, "captures"), video)
 	sm.Register(timelapse)
 
-	// HomeAssistant (placeholder or actual if implemented)
-	// For now, use nil or a simple event forwarder if needed.
-
-	// MQTT needs Timelapse and HomeAssistant
 	mqtt := service.NewMqttQueue(cfgMgr, printerIdx, database, nil, timelapse)
 	sm.Register(mqtt)
 
-	// Notifications need MQTT and Video
 	notif := notifications.NewNotificationService(cfgMgr, mqtt, video)
 	sm.Register(notif)
 
-	// File Transfer needs PPPP and MQTT
 	ft := service.NewFileTransferService(pppp, mqtt)
 	sm.Register(ft)
 
