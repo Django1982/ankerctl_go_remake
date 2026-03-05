@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/django1982/ankerctl/internal/pppp/protocol"
 )
 
 const (
@@ -229,6 +231,17 @@ func (q *VideoQueue) WorkerStart() error {
 	q.mu.RUnlock()
 	if !enabled || controller == nil {
 		return nil
+	}
+
+	type videoHandlerRegistrar interface {
+		RegisterVideoHandler(func(protocol.VideoFrame))
+	}
+	if reg, ok := controller.(videoHandlerRegistrar); ok {
+		reg.RegisterVideoHandler(func(vf protocol.VideoFrame) {
+			if vf.Cmd == protocol.P2PCmdVideoFrame {
+				q.FeedFrame(vf.Data)
+			}
+		})
 	}
 
 	if profile.Live {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,7 @@ type PPPPService struct {
 
 	handlersMu sync.RWMutex
 	handlers   map[byte][]func([]byte)
+	videoHandlers []func(protocol.VideoFrame)
 }
 
 // NewPPPPService creates a PPPP service.
@@ -103,6 +105,80 @@ func (s *PPPPService) RegisterXzyhHandler(channel byte, fn func([]byte)) {
 	s.handlersMu.Lock()
 	s.handlers[channel] = append(s.handlers[channel], fn)
 	s.handlersMu.Unlock()
+}
+
+// RegisterVideoHandler registers a handler for 64-byte video frames (channel 1).
+func (s *PPPPService) RegisterVideoHandler(fn func(protocol.VideoFrame)) {
+	if fn == nil {
+		return
+	}
+	s.handlersMu.Lock()
+	s.videoHandlers = append(s.videoHandlers, fn)
+	s.handlersMu.Unlock()
+}
+
+// P2PCommand sends a JSON-wrapped P2P command on channel 0.
+func (s *PPPPService) P2PCommand(ctx context.Context, subCmd protocol.P2PSubCmdType, payload any) error {
+	cli := s.currentClient()
+	if cli == nil {
+		return errors.New("ppppservice: no client")
+	}
+	ch, err := cli.Channel(0)
+	if err != nil {
+		return err
+	}
+
+	data := map[string]any{
+		"command": int(subCmd),
+	}
+	if payload != nil {
+		if m, ok := payload.(map[string]any); ok {
+			for k, v := range m {
+				data[k] = v
+			}
+		}
+	}
+	jb, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	x := protocol.Xzyh{
+		Cmd:  protocol.P2PCmdP2pJson,
+		Chan: 0,
+		Data: jb,
+	}
+	xb, err := x.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	_, _, err = ch.Write(xb, true)
+	return err
+}
+
+// StartLive starts the video stream from the printer.
+func (s *PPPPService) StartLive(ctx context.Context, mode int) error {
+	// mode is currently ignored by the start_live call in Python, but used in SetVideoMode
+	return s.P2PCommand(ctx, protocol.P2PSubCmdStartLive, map[string]any{
+		"encryptkey": "x",
+		"accountId":  "y",
+	})
+}
+
+// StopLive stops the video stream.
+func (s *PPPPService) StopLive(ctx context.Context) error {
+	return s.P2PCommand(ctx, protocol.P2PSubCmdCloseLive, nil)
+}
+
+// SetVideoMode switches stream resolution/quality.
+func (s *PPPPService) SetVideoMode(ctx context.Context, mode int) error {
+	return s.P2PCommand(ctx, protocol.P2PSubCmdLiveModeSet, map[string]any{"mode": mode})
+}
+
+// SetLight toggles the printer camera light.
+func (s *PPPPService) SetLight(ctx context.Context, on bool) error {
+	return s.P2PCommand(ctx, protocol.P2PSubCmdLightStateSwitch, map[string]any{"open": on})
 }
 
 // WorkerStart establishes the PPPP client.
@@ -207,18 +283,29 @@ func (s *PPPPService) drainXzyh(channel byte, ch *protocol.Channel) error {
 			return nil
 		}
 		if string(header[:4]) != "XZYH" {
-			return nil
+			_ = ch.Read(1, 0)
+			continue
 		}
 		sz := int(binary.LittleEndian.Uint32(header[6:10]))
 		frame := ch.Read(16+sz, 0)
 		if len(frame) == 0 {
 			return nil
 		}
-		x, err := protocol.ParseXzyh(frame)
-		if err != nil {
-			return err
+
+		if channel == 1 {
+			vf, err := protocol.ParseVideoFrame(frame)
+			if err != nil {
+				s.log.Warn("video frame parse failed", "err", err)
+				continue
+			}
+			s.dispatchVideo(vf)
+		} else {
+			x, err := protocol.ParseXzyh(frame)
+			if err != nil {
+				return err
+			}
+			s.dispatchXzyh(channel, x.Data)
 		}
-		s.dispatchXzyh(channel, x.Data)
 	}
 }
 
@@ -230,5 +317,15 @@ func (s *PPPPService) dispatchXzyh(channel byte, payload []byte) {
 	for _, h := range handlers {
 		data := append([]byte(nil), payload...)
 		h(data)
+	}
+}
+
+func (s *PPPPService) dispatchVideo(vf protocol.VideoFrame) {
+	s.handlersMu.RLock()
+	handlers := append([]func(protocol.VideoFrame){}, s.videoHandlers...)
+	s.handlersMu.RUnlock()
+
+	for _, h := range handlers {
+		h(vf)
 	}
 }

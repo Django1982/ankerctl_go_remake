@@ -144,6 +144,23 @@ const (
 // P2PCmdType is the command ID inside XZYH frames.
 type P2PCmdType uint16
 
+const (
+	P2PCmdStartRealtimeMedia P2PCmdType = 0x03EB
+	P2PCmdStopRealtimeMedia  P2PCmdType = 0x03EC
+	P2PCmdVideoFrame         P2PCmdType = 0x0514
+	P2PCmdP2pJson            P2PCmdType = 0x06A4
+)
+
+// P2PSubCmdType is used for API commands inside XZYH payloads.
+type P2PSubCmdType uint16
+
+const (
+	P2PSubCmdStartLive        P2PSubCmdType = 0x03E8
+	P2PSubCmdCloseLive        P2PSubCmdType = 0x03E9
+	P2PSubCmdLightStateSwitch P2PSubCmdType = 0x03EB
+	P2PSubCmdLiveModeSet      P2PSubCmdType = 0x03ED
+)
+
 // FileTransfer is the AABB frame type.
 type FileTransfer uint8
 
@@ -591,7 +608,7 @@ func ParseListenResp(payload []byte) (ListenResp, error) {
 	return ListenResp{Relays: relays}, nil
 }
 
-// Xzyh is the 16-byte command/video frame.
+// Xzyh is the 16-byte command frame.
 type Xzyh struct {
 	Cmd      P2PCmdType
 	Len      uint32
@@ -602,6 +619,16 @@ type Xzyh struct {
 	Unk3     uint8
 	DevType  uint8
 	Data     []byte
+}
+
+// VideoFrame is the 64-byte XZYH frame for video data.
+type VideoFrame struct {
+	Xzyh
+	Timestamp uint32
+	Index     uint32
+	Width     uint16
+	Height    uint16
+	Format    uint8
 }
 
 func (x Xzyh) MarshalBinary() ([]byte, error) {
@@ -648,6 +675,32 @@ func ParseXzyh(data []byte) (Xzyh, error) {
 		Data:     append([]byte(nil), data[16:16+sz]...),
 	}
 	return x, nil
+}
+
+// ParseVideoFrame parses a 64-byte XZYH video frame.
+func ParseVideoFrame(data []byte) (VideoFrame, error) {
+	if len(data) < 64 {
+		return VideoFrame{}, fmt.Errorf("pppp: short video frame: %d", len(data))
+	}
+	base, err := ParseXzyh(data)
+	if err != nil {
+		return VideoFrame{}, err
+	}
+	vf := VideoFrame{
+		Xzyh:      base,
+		Timestamp: binary.LittleEndian.Uint32(data[16:20]),
+		Index:     binary.LittleEndian.Uint32(data[20:24]),
+		Width:     binary.LittleEndian.Uint16(data[24:26]),
+		Height:    binary.LittleEndian.Uint16(data[26:28]),
+		Format:    data[28],
+	}
+	// The actual H.264/H.265 data starts at offset 64.
+	if len(data) > 64 {
+		vf.Data = append([]byte(nil), data[64:]...)
+	} else {
+		vf.Data = nil
+	}
+	return vf, nil
 }
 
 // Aabb is file-transfer frame header and CRC wrapper.
