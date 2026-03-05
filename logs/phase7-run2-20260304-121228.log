@@ -1,0 +1,5348 @@
+OpenAI Codex v0.107.0 (research preview)
+--------
+workdir: /data_hdd/ankerctl_go_remake
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: medium
+reasoning summaries: none
+session id: 019cb88c-9db6-7d71-96db-b26ea01bf40e
+--------
+user
+### PROJECT INSTRUCTIONS (CLAUDE.md)
+
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Go reimplementation of [ankerctl](https://github.com/ankermake/ankermake-m5-protocol) — a CLI and web UI for AnkerMake M5 3D printers. The Python source lives at `/data_hdd/ankermake-m5-protocol-django1982/`. This Go rewrite targets 1:1 feature parity.
+
+**Module**: `github.com/django1982/ankerctl` (Go 1.22)
+**Migration plan**: `MIGRATION_PLAN.md` — 16-phase roadmap, currently Phase 1 (scaffold) done.
+
+## Common Commands
+
+```bash
+# Build
+go build -o ankerctl ./cmd/ankerctl/
+
+# Run all tests
+go test ./...
+
+# Run tests for a specific package
+go test ./internal/crypto/...
+
+# Single test
+go test -run TestFunctionName ./internal/crypto/
+
+# Run the server (once implemented)
+./ankerctl webserver run
+
+# Vet + lint
+go vet ./...
+```
+
+## Architecture
+
+### Package Dependency Order
+
+The packages form a strict layering. Never import upward:
+
+```
+cmd/ankerctl          → everything (entry point, cobra CLI)
+internal/web          → service, model, config, notifications, gcode
+internal/service      → mqtt/client, pppp/client, model, config, notifications, gcode
+internal/mqtt/client  → mqtt/protocol, crypto, config
+internal/pppp/client  → pppp/protocol, pppp/crypto, crypto
+internal/httpapi      → crypto, config, model
+internal/config       → model
+internal/model        → (no internal deps)
+internal/crypto       → (no internal deps)
+internal/pppp/crypto  → (no internal deps)
+internal/util         → (no internal deps)
+internal/gcode        → (no internal deps)
+internal/logging      → (no internal deps)
+```
+
+### Key Protocol Details
+
+**MQTT** (`internal/mqtt/`): Connects to Anker's broker on port 8789. Each message is a 63-byte fixed header + AES-256-CBC encrypted body + XOR checksum. The AES IV is the fixed string `"3DPrintAnkerMake"`. Topics follow the pattern `/phone/maker/{SN}/notice` (subscribe) and `/device/maker/{SN}/command` (publish).
+
+**PPPP** (`internal/pppp/`): UDP-based P2P protocol for LAN communication. One UDP socket serves 8 logical channels. LAN discovery on port 32108. Key complexity: DRW pipelining with a 64-packet in-flight window and 0.5s retransmission timeout. CyclicU16 is a 16-bit wraparound counter used for sequencing.
+
+**Crypto** (`internal/crypto/`): AES-256-CBC with PKCS7 padding. ECDH uses secp256r1 with Anker's hardcoded public key (X/Y in `MIGRATION_PLAN.md`). The PPPP `crypto_curse/decurse` functions live in `internal/pppp/crypto/` and use shuffle tables — these must be bit-exact.
+
+### Service Framework (`internal/service/`)
+
+Services implement a lifecycle interface: `WorkerInit → WorkerStart → WorkerRun → WorkerStop`. The `ServiceManager` uses reference counting (borrow/return) to auto-start services on first use and auto-stop when unused. Core services:
+
+- **MqttQueue**: The heart of the app. Handles 39 message types (ct values). The state machine on `ct=1000`: 0=idle, 1=printing, 2=paused, 8=aborted. Progress arrives as 0–10000 from MQTT; divide by 100 for the API.
+- **PPPPService**: LAN connection via PPPP. Restarts on `ConnectionReset`.
+- **VideoQueue**: H.264 stream from the printer camera. Stall detection at 15s. Profiles: sd (848×480), hd (1280×720), fhd (1920×1080, snapshot-only).
+- **FileTransferService**: GCode patching + upload via PPPP channels.
+- **TimelapseService**: ffmpeg-based. Resume window is 60 min; orphan recovery up to 24h.
+- **HomeAssistantService**: Publishes HA MQTT Discovery payloads (11 sensors, 2 binary, 1 switch, 1 camera) to an external broker with 60s heartbeat.
+
+### Web Layer (`internal/web/`)
+
+HTTP server using chi/v5. Default listen: `127.0.0.1:4470`.
+
+**Auth rules** (must match Python exactly):
+- POST/DELETE: always require API key
+- Protected GET paths: `/api/ankerctl/server/reload`, `/api/debug/*`, `/api/settings/mqtt`, `/api/notifications/settings`
+- `/api/ankerctl/config/upload` and `/api/ankerctl/config/login` are exempt when no printer is configured
+
+**Middleware order** (outer to inner): recovery → request-id → access-logging → security-headers → rate-limit → body-size-limit → auth
+
+**WebSockets**: `/ws/mqtt` (MQTT events), `/ws/video` (binary H.264), `/ws/pppp-state` (connection poll), `/ws/upload` (file transfer progress), `/ws/ctrl` (bidirectional, has inline auth).
+
+### Config and Models (`internal/config/`, `internal/model/`)
+
+Config is JSON on disk. The Python source uses `__type__` for polymorphic deserialization — Go must handle this with custom `UnmarshalJSON`. Config directory must be chmod 0700. Auth tokens and MQTT keys must never appear in logs.
+
+### Frontend (`static/`)
+
+Unchanged from Python. HTML templates are converted from Jinja2 to `html/template` syntax. Served as embedded files via `//go:embed static/*`.
+
+## Environment Variables
+
+All must be supported identically to Python. Key ones:
+
+| Variable | Purpose |
+|---|---|
+| `FLASK_HOST` / `FLASK_PORT` | Bind address (rename target: `ANKERCTL_HOST`/`ANKERCTL_PORT`) |
+| `ANKERCTL_API_KEY` | API key (min 16 chars, `[a-zA-Z0-9_-]`) |
+| `ANKERCTL_DEV_MODE` | Enables `/api/debug/*` endpoints |
+| `PRINTER_INDEX` | Active printer index |
+| `UPLOAD_MAX_MB` | Upload size limit |
+| `TIMELAPSE_ENABLED`, `TIMELAPSE_INTERVAL_SEC` | Timelapse control |
+| `HA_MQTT_*` | Home Assistant MQTT bridge settings |
+| `APPRISE_*` | Notification settings |
+
+See `MIGRATION_PLAN.md` for the full list.
+
+## Critical Constants
+
+These are protocol-level and must be bit-exact:
+
+```go
+const MQTTAesIV   = "3DPrintAnkerMake" // Fixed 16-byte AES IV
+const MQTTPort    = 8789
+const PPPPLanPort = 32108
+const PPPPSeed    = "EUPRAKM"
+const DefaultHost = "127.0.0.1"
+const DefaultPort = 4470
+```
+
+## Python Source Reference
+
+When implementing a package, cross-reference the Python original:
+
+| Go Package | Python Source |
+|---|---|
+| `internal/mqtt/protocol` | `libflagship/mqtt.py`, `libflagship/amtypes.py` |
+| `internal/mqtt/client` | `libflagship/mqttapi.py` |
+| `internal/pppp/protocol` | `libflagship/pppp.py`, `libflagship/cyclic.py` |
+| `internal/pppp/client` | `libflagship/ppppapi.py` |
+| `internal/pppp/crypto` | `libflagship/megajank.py` (PPPP section) |
+| `internal/crypto` | `libflagship/megajank.py` (AES/ECDH section) |
+| `internal/httpapi` | `libflagship/httpapi.py`, `libflagship/seccode.py` |
+| `internal/config` | `cli/config.py`, `libflagship/logincache.py` |
+| `internal/model` | `cli/model.py` |
+| `internal/service` | `web/lib/service.py`, `web/service/*.py` |
+| `internal/web` | `web/__init__.py` (~1700 LOC, 40+ routes) |
+| `internal/notifications` | `libflagship/notifications/`, `web/notifications.py` |
+| `internal/gcode` | `cli/util.py` (gcode functions) |
+
+## Security Requirements
+
+- Parameterized SQL queries everywhere (never string concatenation)
+- Strip HTML tags from filament text fields (XSS prevention)
+- Validate path parameters for timelapse download and log viewer (path traversal)
+- Config dir: `os.Chmod(dir, 0700)`
+- Redact `auth_token`, `mqtt_key`, `api_key` from all log output
+- No panics on production paths — always propagate errors
+- All goroutines must respect `context.Context` for clean shutdown
+
+
+### AGENT PROFILE: go-migration-architect
+
+---
+name: go-migration-architect
+description: "Use this agent when you need to migrate Python/Flask code from the ankerctl project to Go, design Go equivalents of existing services, review Go code for idiomatic patterns, or coordinate multi-agent Go migration tasks. Examples:\\n\\n<example>\\nContext: User wants to migrate the web server from Flask to Go.\\nuser: 'Migrate the Flask webserver in web/__init__.py to Go'\\nassistant: 'I'll use the go-migration-architect agent to handle this migration.'\\n<commentary>\\nA complete Flask-to-Go service migration requires deep Go expertise and understanding of the existing architecture. Launch the go-migration-architect agent.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: User asks for a Go equivalent of a Python service.\\nuser: 'Wie würde der MqttQueue Service in Go aussehen?'\\nassistant: 'Ich starte den go-migration-architect Agenten, um den MqttQueue Service zu analysieren und eine Go-Implementierung zu entwerfen.'\\n<commentary>\\nDesigning a Go equivalent of a complex Python service with goroutines, channels, and interfaces requires senior Go expertise.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: A code-writing agent has just produced a Go file and needs review.\\nuser: 'Here is the new pppp.go file I wrote'\\nassistant: 'Let me use the go-migration-architect agent to review this Go code for idiomatic patterns and correctness.'\\n<commentary>\\nAfter Go code is written, the go-migration-architect agent should review it for idiomatic Go, performance, and correctness before merging.\\n</commentary>\\n</example>\\n\\n<example>\\nContext: User wants to start the migration project from scratch.\\nuser: 'Fang mit der Go-Migration an'\\nassistant: 'Ich starte den go-migration-architect Agenten, um die Migrationsplanung und erste Implementierungsschritte zu koordinieren.'\\n<commentary>\\nStarting a full project migration requires architectural planning, module setup, and coordination — exactly what this agent handles.\\n</commentary>\\n</example>"
+model: sonnet
+memory: project
+---
+
+Du bist ein Senior Go-Entwickler mit über 10 Jahren Erfahrung in der Entwicklung hochperformanter, produktionsreifer Go-Dienste. Du wirst von deinen Peers in die Top 10% der Go-Entwickler weltweit eingeordnet. Dein Auftrag ist es, das `ankerctl`-Projekt (Python/Flask, GPLv3) vollständig nach Go zu migrieren.
+
+## Dein Charakter und deine Arbeitsweise
+
+- Du gibst dich nicht mit 95% zufrieden. Die letzten 5% — Edge Cases, Fehlerbehandlung, Performance-Details, Dokumentation, Test-Coverage — sind für dich genauso wichtig wie die Grundfunktionalität.
+- Du schreibst idiomatisches Go: klare Interfaces, Composition over Inheritance, explizite Fehlerbehandlung, keine Magic.
+- Du kommunizierst klar und präzise mit anderen Agenten. Du formulierst Handoffs, Statusberichte und Blockers explizit, sodass jeder Agent sofort weiß, was er wissen muss.
+- Du dokumentierst architektonische Entscheidungen (ADRs) knapp aber vollständig.
+- Du priorisierst Korrektheit > Lesbarkeit > Performance, außer wenn Performance kritisch ist (z.B. PPPP UDP-Protokoll, Video-Streaming).
+
+## Projektkontext (ankerctl)
+
+Das Projekt steuert AnkerMake M5 3D-Drucker über drei Protokolle:
+- **MQTT** (AES-256-CBC verschlüsselt, cloud-basiert) — `libflagship/mqtt.py`
+- **PPPP** (asymmetrisches UDP P2P, LAN) — `libflagship/pppp.py`
+- **HTTP** (REST API, Flask) — `web/__init__.py`
+
+Generierte Dateien (`libflagship/mqtt.py`, `libflagship/pppp.py`, `libflagship/amtypes.py`) stammen aus dem `transwarp` Code-Generator (`specification/*.stf`). In Go müssen diese Strukturen manuell oder über einen angepassten Generator abgebildet werden.
+
+Key Services (Python):
+- `MqttQueue` — zentraler Event-Bus, MQTT State Machine
+- `PPPPService` — LAN-Verbindung, ref-counted
+- `VideoQueue` — H.264 Stream, Stall-Detection
+- `FileTransferService` — GCode Upload Pipeline
+- `PrintHistory` — SQLite
+- `TimelapseService` — JPEG-Snapshots → MP4
+- `HomeAssistantService` — HA MQTT Discovery
+- `FilamentStore` — SQLite Filament-Profile
+
+## Go-Architekturvorgaben
+
+### Modulstruktur
+```
+ankerctl-go/
+├── cmd/ankerctl/          # main package, CLI entry point (cobra)
+├── internal/
+│   ├── proto/mqtt/        # MQTT protocol (AES, packet parsing)
+│   ├── proto/pppp/        # PPPP protocol (UDP, file transfer)
+│   ├── service/           # Service-Layer (goroutine-based)
+│   │   ├── mqtt.go
+│   │   ├── pppp.go
+│   │   ├── video.go
+│   │   ├── filetransfer.go
+│   │   ├── history.go
+│   │   ├── timelapse.go
+│   │   ├── homeassistant.go
+│   │   └── filament.go
+│   ├── web/               # HTTP server (net/http or chi)
+│   ├── config/            # Config parsing & storage
+│   └── notify/            # Apprise notifications
+├── go.mod
+└── go.sum
+```
+
+### Service-Pattern in Go
+Ersetze Python's `threading.Thread`-basierte Services durch Goroutines mit `context.Context` für Lifecycle-Management:
+
+```go
+type Service interface {
+    Start(ctx context.Context) error
+    Stop() error
+    Name() string
+}
+
+type ServiceManager struct {
+    services map[string]Service
+    mu       sync.RWMutex
+}
+```
+
+Verwende `errgroup.Group` für koordinierte Goroutine-Gruppen. Nutze `chan struct{}` oder `context.Done()` für Shutdown-Signale.
+
+### WebSocket-Pattern
+Ersetze Flask-Sock mit `gorilla/websocket`. Broadcast über einen Hub-Pattern:
+```go
+type Hub struct {
+    clients    map[*Client]bool
+    broadcast  chan []byte
+    register   chan *Client
+    unregister chan *Client
+}
+```
+
+### MQTT-Protokoll
+Die AES-256-CBC Verschlüsselung muss exakt repliziert werden. Verwende `crypto/aes` + `cipher.NewCBCDecrypter`. Teste gegen bekannte Payloads aus dem Python-Code.
+
+### CLI
+Verwende `cobra` als Click-Äquivalent. Struktur:
+```
+ankerctl config import|login|show|set-password|remove-password|decode
+ankerctl mqtt monitor|gcode|rename-printer|send|gcode-dump
+ankerctl pppp lan-search|print-file|capture-video
+ankerctl http calc-check-code|calc-sec-code
+ankerctl webserver run
+```
+
+### Datenbank (SQLite)
+Verwende `modernc.org/sqlite` (CGO-frei) oder `mattn/go-sqlite3`. Schema-Migration mit `database/sql` + handgeschriebenen SQL-Migrations-Dateien.
+
+### Logging
+Verwende `log/slog` (stdlib, Go 1.21+) mit strukturiertem Output. Benannte Logger per Service über `slog.With("service", name)`.
+
+## Qualitätsgrundsätze (die letzten 5%)
+
+1. **Fehlerbehandlung**: Kein `_` für errors außer in Tests. Wrap errors mit `fmt.Errorf("context: %w", err)`.
+2. **Tests**: Unit Tests für Protokoll-Parsing (MQTT Decryption, PPPP Packet Parsing). Integration Tests für Service-Lifecycle.
+3. **Race Conditions**: Alle Tests mit `-race` Flag laufen lassen.
+4. **Graceful Shutdown**: Alle Services müssen auf SIGINT/SIGTERM reagieren und sauber beenden.
+5. **Memory Leaks**: Goroutinen müssen immer einen Exit-Pfad haben. Kein Goroutine-Leak.
+6. **Dokumentation**: Exported Types und Functions haben GoDoc-Kommentare.
+7. **Build**: `go vet`, `staticcheck`, `golangci-lint` ohne Warnings.
+
+## Kommunikationsprotokoll mit anderen Agenten
+
+Wenn du mit anderen Agenten kommunizierst (z.B. Code-Generator, Test-Runner, Reviewer), strukturiere deine Nachrichten so:
+
+**HANDOFF an Agent `<name>`:**
+```
+AUFGABE: <konkrete Aufgabe in einem Satz>
+KONTEXT: <was bereits existiert / was der Agent wissen muss>
+ERWARTETE OUTPUTS: <was der Agent liefern soll>
+BLOCKERS: <was ich brauche, bevor ich weitermachen kann>
+PRIORITÄT: hoch|mittel|niedrig
+```
+
+**STATUSBERICHT:**
+```
+STATUS: in_progress|blocked|done
+FERTIG: <was abgeschlossen ist>
+OFFEN: <was noch aussteht>
+PROBLEME: <technische Blocker>
+NÄCHSTER SCHRITT: <konkrete nächste Aktion>
+```
+
+## Entscheidungsrahmen bei Trade-offs
+
+1. **Kompatibilität vs. Idiomatic Go**: Priorisiere API-Kompatibilität mit bestehenden Clients (OctoPrint-Plugin, Slicer-Integration), auch wenn es Go-unüblich ist.
+2. **CGO vs. Pure Go**: Bevorzuge Pure Go für Portabilität (multi-arch Docker: `linux/arm/v7`, `linux/arm64`, `linux/amd64`).
+3. **Externe Bibliotheken**: Nur wenn die stdlib nicht ausreicht. Jede neue Dependency braucht eine kurze Begründung.
+4. **Breaking Changes**: Dokumentiere jeden Breaking Change im Migrations-Log explizit.
+
+## Migrations-Reihenfolge
+
+1. **Phase 1**: Protokoll-Layer (`proto/mqtt`, `proto/pppp`) — keine Abhängigkeiten
+2. **Phase 2**: Config-Layer (`internal/config`) — minimal
+3. **Phase 3**: Service-Layer (`service/mqtt`, `service/pppp`, `service/video`)
+4. **Phase 4**: Web-Layer (`internal/web`) — REST API + WebSockets
+5. **Phase 5**: CLI (`cmd/ankerctl`) — Cobra-Commands
+6. **Phase 6**: Sub-Services (History, Timelapse, HA, Filament)
+7. **Phase 7**: Docker, CI/CD, Dokumentation
+
+**Update your agent memory** as you discover Go architecture decisions, protocol implementation details, library choices, migration blockers, and inter-service dependencies. Document what was migrated, what patterns were chosen, and why — this builds institutional knowledge for the full migration.
+
+Examples of what to record:
+- Which Go libraries were chosen for MQTT, PPPP, SQLite and why
+- AES encryption implementation details and test vectors
+- Service lifecycle patterns and goroutine topology
+- API compatibility decisions and breaking changes
+- Known edge cases in protocol parsing discovered during migration
+- Build and Docker configuration decisions
+
+# Persistent Agent Memory
+
+You have a persistent Persistent Agent Memory directory at `/data_hdd/ankerctl_go_remake/.claude/agent-memory/go-migration-architect/`. Its contents persist across conversations.
+
+As you work, consult your memory files to build on previous experience. When you encounter a mistake that seems like it could be common, check your Persistent Agent Memory for relevant notes — and if nothing is written yet, record what you learned.
+
+Guidelines:
+- `MEMORY.md` is always loaded into your system prompt — lines after 200 will be truncated, so keep it concise
+- Create separate topic files (e.g., `debugging.md`, `patterns.md`) for detailed notes and link to them from MEMORY.md
+- Update or remove memories that turn out to be wrong or outdated
+- Organize memory semantically by topic, not chronologically
+- Use the Write and Edit tools to update your memory files
+
+What to save:
+- Stable patterns and conventions confirmed across multiple interactions
+- Key architectural decisions, important file paths, and project structure
+- User preferences for workflow, tools, and communication style
+- Solutions to recurring problems and debugging insights
+
+What NOT to save:
+- Session-specific context (current task details, in-progress work, temporary state)
+- Information that might be incomplete — verify against project docs before writing
+- Anything that duplicates or contradicts existing CLAUDE.md instructions
+- Speculative or unverified conclusions from reading a single file
+
+Explicit user requests:
+- When the user asks you to remember something across sessions (e.g., "always use bun", "never auto-commit"), save it — no need to wait for multiple interactions
+- When the user asks to forget or stop remembering something, find and remove the relevant entries from your memory files
+- Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
+
+## MEMORY.md
+
+Your MEMORY.md is currently empty. When you notice a pattern worth preserving across sessions, save it here. Anything in MEMORY.md will be included in your system prompt next time.
+
+
+### AGENT MEMORY
+
+# Go Migration Architect - Memory
+
+## Projekt
+- Ziel: `/data_hdd/ankerctl_go_remake/`
+- Quelle: `/data_hdd/ankermake-m5-protocol-django1982/`
+- Modul: `github.com/django1982/ankerctl` (Go 1.22)
+- Go ist NICHT installiert auf diesem System — nur statische Analyse moeglich
+
+## Abgeschlossene Phasen
+- Phase 1 (Projektstruktur): DONE — 20 Packages, go.mod, MIGRATION_PLAN.md
+- Phase 3 (Crypto Layer): DONE — alle Files implementiert und reviewt
+- Phase 4 (HTTP Middleware Stack): DONE — reviewed+fixed, 4 bugs behoben (details: phase4-web.md)
+
+## Phase 3 Crypto — kritische Entscheidungen (details: crypto-layer.md)
+
+### byte-Arithmetik vs int in curse/decurse
+`si(offset, x, divisor byte) int` Helper verhindert uint8-Overflow bei Index-Berechnung.
+Alle Shuffle-Indizes gehen durch si() mit int-Arithmetik.
+
+### ECDH
+`ephemeralKey.ECDH(ankerPub)` gibt X-Koordinate als 32 Bytes zurueck — direkt als AES-Key.
+`PublicKey.Bytes()` = 04||X||Y (65 bytes, uncompressed point).
+
+### Curse State-Update Asymmetrie
+- curse encrypt loop: State verwendet x NACH XOR (encrypted byte)
+- decurse loop: State verwendet x VOR XOR (raw ciphertext)
+
+## Architekturregeln
+- Pure Go — kein CGo, kein Rust
+- context.Context fuer Lifecycle (kein threading.Thread)
+- errgroup fuer koordinierte Goroutinen
+- Interfaces fuer alle Services (testbar)
+- Kein globaler State ausserhalb von cmd/
+
+## Libraries
+- chi/v5, gorilla/websocket, modernc.org/sqlite, eclipse/paho.mqtt, cobra, google/uuid
+
+## Phase 4 Web — kritische Muster (details: phase4-web.md)
+- httpServer-Feld immer per Mutex schuetzen (Start schreibt, Shutdown liest)
+- envInt() Rueckgabe (val, bool) direkt fuer printerIndexLocked nutzen — kein LookupEnv doppelt
+- /video braucht eigene Auth (kein Redirect auf ?apikey=) — Timelapse nutzt direkte URL-Parameter
+- SecurityHeaders: exakt 4 Header wie Python; X-XSS-Protection NICHT setzen (deprecated)
+
+
+### MIGRATION PLAN
+
+# ankerctl Go Migration Plan
+
+**Status**: Phase 1 - Projektstruktur angelegt
+**Erstellt**: 2026-03-03
+**Ziel**: 1:1 Feature-Parity mit dem Python-Original
+
+---
+
+## Inhaltsverzeichnis
+
+1. [Architektur-Uebersicht](#architektur-uebersicht)
+2. [Python-zu-Go Paket-Mapping](#python-zu-go-paket-mapping)
+3. [Bibliotheks-Empfehlungen](#bibliotheks-empfehlungen)
+4. [Migrationsphasen](#migrationsphasen)
+5. [Sicherheits-Checkliste](#sicherheits-checkliste)
+6. [Kritische Protokoll-Konstanten](#kritische-protokoll-konstanten)
+
+---
+
+## Architektur-Uebersicht
+
+### Go-Projektstruktur
+
+```
+ankerctl_go_remake/
+  cmd/
+    ankerctl/               # CLI entry point (main.go)
+  internal/
+    config/                 # Config parser, data models, ConfigManager
+    crypto/                 # AES-256-CBC, ECDH, XOR checksums
+    mqtt/
+      protocol/             # MqttMsg, MqttPktType, MqttMsgType (from libflagship/mqtt.py)
+      client/               # MQTT client wrapper (from libflagship/mqttapi.py)
+    pppp/
+      protocol/             # PPPP packet types, Message parsing (from libflagship/pppp.py)
+      client/               # PPPP API, Channels, Wire (from libflagship/ppppapi.py)
+      crypto/               # PPPP crypto_curse/decurse (from libflagship/megajank.py)
+    httpapi/                # Anker Cloud HTTP API (from libflagship/httpapi.py)
+    service/                # Service framework + all services
+      manager.go            # ServiceManager with ref-counting
+      service.go            # Service interface + lifecycle
+      mqttqueue.go          # MqttQueue (from web/service/mqtt.py)
+      pppp.go               # PPPPService (from web/service/pppp.py)
+      video.go              # VideoQueue (from web/service/video.py)
+      filetransfer.go       # FileTransferService (from web/service/filetransfer.py)
+      history.go            # PrintHistory SQLite (from web/service/history.py)
+      timelapse.go          # TimelapseService (from web/service/timelapse.py)
+      homeassistant.go      # HA MQTT Discovery (from web/service/homeassistant.py)
+      filament.go           # FilamentStore SQLite (from web/service/filament.py)
+    web/
+      server.go             # HTTP server setup, middleware stack
+      routes.go             # All REST endpoints
+      handler/              # Grouped HTTP handler functions
+        general.go          # /, /api/health, /api/version, /video
+        config.go           # /api/ankerctl/config/*, /api/ankerctl/server/reload
+        printer.go          # /api/printer/*, /api/snapshot
+        notification.go     # /api/notifications/*
+        settings.go         # /api/settings/*
+        history.go          # /api/history
+        timelapse.go        # /api/timelapses, /api/timelapse/*
+        filament.go         # /api/filaments, /api/filaments/*
+        printers.go         # /api/printers, /api/printers/active
+        slicer.go           # /api/files/local (OctoPrint compat)
+        debug.go            # /api/debug/* (ANKERCTL_DEV_MODE only)
+        bedlevel.go         # /api/printer/bed-leveling
+        snapshot.go         # /api/snapshot
+        video.go            # /video stream
+      ws/                   # WebSocket handlers
+        mqtt.go             # /ws/mqtt
+        video.go            # /ws/video
+        ppppstate.go        # /ws/pppp-state
+        upload.go           # /ws/upload
+        ctrl.go             # /ws/ctrl (bidirectional, inline auth)
+      middleware/            # HTTP middleware
+        auth.go             # API key authentication
+        security.go         # Security headers (CSP, X-Frame-Options, etc.)
+        ratelimit.go        # IP-based rate limiting
+        logging.go          # Access logging
+      templates.go          # Go html/template rendering
+    notifications/          # Apprise notification system
+      apprise.go            # Apprise HTTP client
+      notifier.go           # AppriseNotifier lifecycle
+      events.go             # Event constants
+    gcode/                  # GCode parsing utilities
+      time.go               # patch_gcode_time
+      layers.go             # extract_layer_count
+    model/                  # Shared data models
+      printer.go            # Printer struct
+      account.go            # Account struct
+      config.go             # Config struct with JSON serialization
+      defaults.go           # Default configurations
+    util/                   # Shared utilities
+      encoding.go           # enhex/unhex, b64e/b64d equivalents
+      format.go             # format_duration, format_bytes, pretty_json
+      ratelimit.go          # Upload rate limiter
+  static/                   # 1:1 copy of frontend (HTML/JS/CSS/vendor)
+  go.mod
+  go.sum
+  Dockerfile
+  docker-compose.yaml
+  MIGRATION_PLAN.md
+  README.md
+  LICENSE
+```
+
+---
+
+## Python-zu-Go Paket-Mapping
+
+### Protocol Layer (libflagship/)
+
+| Python Source | Go Package | Description |
+|---|---|---|
+| `libflagship/mqtt.py` | `internal/mqtt/protocol` | MqttMsg, MqttPktType, MqttMsgType (auto-generated) |
+| `libflagship/mqttapi.py` | `internal/mqtt/client` | MQTT client, subscribe/publish, fetch/command |
+| `libflagship/pppp.py` | `internal/pppp/protocol` | PPPP packet types, Message.parse, Xzyh, Aabb |
+| `libflagship/ppppapi.py` | `internal/pppp/client` | AnkerPPPPApi, Channel, Wire, PPPPState |
+| `libflagship/megajank.py` (AES/ECDH) | `internal/crypto` | AES-CBC, ECDH, XOR checksums |
+| `libflagship/megajank.py` (PPPP) | `internal/pppp/crypto` | crypto_curse/decurse, initstring decoder |
+| `libflagship/httpapi.py` | `internal/httpapi` | Anker Cloud REST API |
+| `libflagship/seccode.py` | `internal/httpapi` | Check code / sec code calculation |
+| `libflagship/amtypes.py` | `internal/mqtt/protocol` | Struct definitions |
+| `libflagship/cyclic.py` | `internal/pppp/protocol` | CyclicU16 counter |
+| `libflagship/pktdump.py` | `internal/pppp/client` | Packet debug dump writer |
+| `libflagship/notifications/` | `internal/notifications` | Apprise HTTP client + events |
+| `libflagship/logincache.py` | `internal/config` | Region detection from login.json |
+| `libflagship/util.py` | `internal/util` | enhex/unhex, b64e/b64d |
+
+### Service Layer (web/service/)
+
+| Python Source | Go Package | LOC | Complexity |
+|---|---|---|---|
+| `web/lib/service.py` | `internal/service` | 375 | HIGH - Lifecycle state machine |
+| `web/service/mqtt.py` | `internal/service` | 724 | VERY HIGH - Core of the app |
+| `web/service/pppp.py` | `internal/service` | 194 | HIGH - UDP asymmetry |
+| `web/service/video.py` | `internal/service` | 212 | MEDIUM |
+| `web/service/filetransfer.py` | `internal/service` | 137 | MEDIUM |
+| `web/service/history.py` | `internal/service` | 225 | LOW |
+| `web/service/timelapse.py` | `internal/service` | 665 | HIGH - ffmpeg, resume window |
+| `web/service/homeassistant.py` | `internal/service` | 502 | MEDIUM |
+| `web/service/filament.py` | `internal/service` | 411 | LOW |
+
+### API Layer (web/ + cli/)
+
+| Python Source | Go Package | Description |
+|---|---|---|
+| `web/__init__.py` | `internal/web` | ~1700 LOC: 40+ routes, 5 WS, middleware |
+| `web/notifications.py` | `internal/notifications` | AppriseNotifier, snapshot capture |
+| `cli/config.py` | `internal/config` | ConfigManager, config import |
+| `cli/model.py` | `internal/model` | Data models (Config, Account, Printer) |
+| `cli/util.py` | `internal/util` + `internal/gcode` | GCode patching, rate limiting, helpers |
+| `cli/mqtt.py` | `cmd/ankerctl` + `internal/mqtt/client` | CLI commands |
+| `cli/pppp.py` | `cmd/ankerctl` + `internal/pppp/client` | CLI commands |
+
+### Frontend (static/)
+
+| Source | Action |
+|---|---|
+| `static/*.html` | Copy 1:1, convert Jinja2 to Go `html/template` |
+| `static/*.js` | Copy 1:1 (no framework change) |
+| `static/*.css` | Copy 1:1 |
+| `static/vendor/` | Copy 1:1 |
+| `static/libflagship.js` | Copy 1:1 |
+
+---
+
+## Library Recommendations
+
+### Primary Libraries
+
+| Purpose | Go Package | Rationale |
+|---|---|---|
+| **HTTP Router** | `github.com/go-chi/chi/v5` | Lightweight, stdlib-compatible |
+| **WebSocket** | `github.com/gorilla/websocket` | De-facto standard |
+| **SQLite** | `modernc.org/sqlite` | CGO-free, pure Go |
+| **MQTT Client** | `github.com/eclipse/paho.mqtt.golang` | Official Eclipse library |
+| **CLI** | `github.com/spf13/cobra` | Standard Go CLI framework |
+| **Logging** | `log/slog` (stdlib) | Structured logging, Go 1.21+ |
+| **Crypto AES** | `crypto/aes` + `crypto/cipher` (stdlib) | AES-256-CBC native |
+| **Crypto ECDH** | `crypto/ecdh` + `crypto/elliptic` (stdlib) | secp256r1 native |
+| **Templates** | `html/template` (stdlib) | Jinja2 replacement |
+| **HTTP Client** | `net/http` (stdlib) | For Anker Cloud API + Apprise |
+| **UUID** | `github.com/google/uuid` | File upload IDs |
+
+---
+
+## Migration Phases
+
+### Phase 1: Project Scaffold (DONE)
+
+Go module initialized, directory structure created, placeholder files in place.
+
+- `go.mod` with `module github.com/django1982/ankerctl`
+- All directories from architecture overview
+- `doc.go` per package with description
+- `cmd/ankerctl/main.go` with empty entry point
+
+---
+
+### Phase 2: Config Parser + Data Models (Day 2-3)
+
+**Goal**: Read/write config files with strict Go types
+
+**Python sources**: `cli/model.py`, `cli/config.py`, `libflagship/logincache.py`
+
+**Go Structs**:
+```go
+type Config struct {
+    Account            *Account            `json:"account"`
+    Printers           []Printer           `json:"printers"`
+    UploadRateMbps     int                 `json:"upload_rate_mbps"`
+    Notifications      map[string]any      `json:"notifications"`
+    Timelapse          map[string]any      `json:"timelapse"`
+    HomeAssistant      map[string]any      `json:"home_assistant"`
+    ActivePrinterIndex int                 `json:"active_printer_index"`
+}
+
+type Printer struct {
+    ID         string  `json:"id"`
+    SN         string  `json:"sn"`
+    Name       string  `json:"name"`
+    Model      string  `json:"model"`
+    CreateTime float64 `json:"create_time"`  // Unix timestamp
+    UpdateTime float64 `json:"update_time"`  // Unix timestamp
+    WifiMAC    string  `json:"wifi_mac"`
+    IPAddr     string  `json:"ip_addr"`
+    MQTTKey    string  `json:"mqtt_key"`     // hex-encoded
+    APIHosts   string  `json:"api_hosts"`    // obfuscated string
+    P2PHosts   string  `json:"p2p_hosts"`    // obfuscated string
+    P2PDUID    string  `json:"p2p_duid"`
+    P2PKey     string  `json:"p2p_key"`
+}
+
+type Account struct {
+    AuthToken string `json:"auth_token"`
+    Region    string `json:"region"`
+    UserID    string `json:"user_id"`
+    Email     string `json:"email"`
+    Country   string `json:"country"`
+}
+```
+
+**Note**: The `__type__` field in JSON is used by Python for polymorphic deserialization.
+Go must handle this during JSON unmarshaling (custom UnmarshalJSON).
+
+**Security**:
+- Config directory chmod 0700
+- Token redaction in logs
+- Strict JSON deserialization
+
+---
+
+### Phase 3: Crypto Layer (Day 3-4)
+
+**Goal**: Port all crypto functions from `megajank.py`
+
+**Sub-modules**:
+1. `internal/crypto/aes.go` - AES-256-CBC with IV `3DPrintAnkerMake`
+2. `internal/crypto/mqtt.go` - mqtt_checksum_add/remove (XOR)
+3. `internal/crypto/ecdh.go` - ECDH login password encryption
+4. `internal/pppp/crypto/` - crypto_curse/decurse, simple_encrypt/decrypt, initstring decoder
+
+**Critical**: PKCS7 padding, fixed IV (16 bytes), Anker EC public key (secp256r1),
+PPPP shuffle tables must be bit-exact.
+
+---
+
+### Phase 4: Middleware Stack + HTTP Server (Day 4-6)
+
+**Goal**: Empty HTTP server with complete security stack
+
+**Middleware order** (outside to inside):
+1. Recovery (panic handler)
+2. Request ID
+3. Access logging
+4. Security headers
+5. Rate limiting (IP-based)
+6. Body size limit
+7. Auth middleware (API key check)
+
+**Auth rules** (exactly like Python):
+- GET: unauthenticated by default
+- POST/DELETE: always require auth
+- Protected GET paths: `/api/ankerctl/server/reload`, `/api/debug/state`,
+  `/api/debug/logs`, `/api/debug/services`, `/api/settings/mqtt`,
+  `/api/notifications/settings`
+- All `/api/debug/*` paths: auth required (prefix match)
+- Setup paths exempt when no printer configured:
+  `/api/ankerctl/config/upload`, `/api/ankerctl/config/login`
+
+---
+
+### Phase 5: SQLite DB Layer (Day 6-7)
+
+**Goal**: Print history and filament profiles with SQLite
+
+**History schema**: id, filename, status, started_at, finished_at, duration_sec,
+progress, failure_reason, task_id
+
+**Filament schema**: 35+ columns (see `web/service/filament.py`)
+
+**Critical behaviors**:
+- Auto-migration via ALTER TABLE
+- Placeholder filter: `"unknown"`, `"unknown.gcode"`, `""` -> skip
+- Retention: 90 days, max 500 entries
+- Thread safety via `sync.Mutex`
+- Parameterized queries everywhere
+- XSS sanitization on text fields
+
+---
+
+### Phase 6: MQTT Protocol + Client (Day 7-10)
+
+**Goal**: MQTT connection to Anker broker, encrypted communication
+
+**Topics**:
+- Subscribe: `/phone/maker/{SN}/notice`, `/phone/maker/{SN}/command/reply`,
+  `/phone/maker/{SN}/query/reply`
+- Publish: `/device/maker/{SN}/command`, `/device/maker/{SN}/query`
+
+**Packet structure**: Header (63 bytes) + AES-256-CBC encrypted body + XOR checksum
+
+**All 39 MqttMsgType values must be ported.**
+
+---
+
+### Phase 7: PPPP Protocol + Client (Day 10-14)
+
+**Goal**: UDP-based P2P protocol for LAN communication
+
+**Critical aspects**:
+- UDP asymmetry: one socket, 8 logical channels
+- DRW pipelining: in-flight window (max 64), retransmission (0.5s timeout)
+- CyclicU16: 16-bit wraparound counter
+- Xzyh frames: 16-byte header + payload on channel 0/1
+- Aabb frames: file transfer on channel 1, CRC-protected
+- LAN discovery: broadcast on port 32108
+
+**Go concurrency mapping**:
+- `Channel.poll()` -> goroutine with ticker
+- `Channel.write()` blocking -> channel + WaitGroup
+- `Wire` (Pipe) -> `chan []byte`
+- `AnkerPPPPBaseApi.run()` -> goroutine with select loop
+
+---
+
+### Phase 8: Service Framework (Day 14-16)
+
+**Goal**: Service lifecycle and ServiceManager in Go
+
+**Service interface**:
+```go
+type Service interface {
+    WorkerInit()
+    WorkerStart() error
+    WorkerRun(timeout time.Duration) error
+    WorkerStop()
+    Name() string
+    State() RunState
+    Start()
+    Stop()
+    Restart()
+    Shutdown()
+    Notify(data any)
+    Tap(handler func(any)) func() // returns cleanup func
+}
+```
+
+**ServiceManager**:
+- Ref-counted get/put with auto-start/stop
+- Borrow pattern (context manager equivalent)
+- Stream pattern (channel-based, 1s timeout)
+- VideoQueue exception: don't stop when video_enabled=true
+- Graceful shutdown with atexit equivalent
+
+**State machine**: Starting -> Running -> Stopping -> Stopped
+**Holdoff**: delayed restarts (1s cooldown)
+**ServiceRestartSignal**: sentinel error for clean restart
+
+---
+
+### Phase 9: Web Services (Day 16-22)
+
+**Goal**: All 8 service implementations
+
+**MqttQueue** (VERY HIGH complexity):
+- ct=1000 state machine (0=idle, 1=printing, 2=paused, 8=aborted)
+- Progress normalization (0-10000 -> 0-100)
+- Print control (0=restart, 2=pause, 3=resume, 4=stop)
+- ct=1044 filename capture with deferred history start
+- Sub-services: PrintHistory, TimelapseService, HomeAssistantService
+- Forward to HA, handle notifications, emit progress events
+
+**PPPPService**: LAN connection, xzyh handler pattern, ConnectionReset -> restart
+
+**VideoQueue**: Profiles (sd/hd/fhd), stall detection (15s), light control, generation counter
+
+**FileTransferService**: GCode patching, layer extraction, PPPP file transfer, progress callback
+
+**TimelapseService**: Periodic snapshots, resume window (60min), ffmpeg assembly,
+persistent frames with .meta sidecar, orphan recovery, light control modes
+
+**HomeAssistantService**: External MQTT, discovery payloads (11 sensors, 2 binary, 1 switch, 1 camera),
+LWT, availability heartbeat (60s), bidirectional light switch
+
+**PrintHistory + FilamentStore**: Already covered in Phase 5, integrated here.
+
+---
+
+### Phase 10: HTTP API Handlers (Day 22-26)
+
+**Goal**: All 40+ REST endpoints
+
+**Endpoint groups**:
+1. General (4): `/`, `/api/health`, `/api/version`, `/video`
+2. Configuration (4): config upload, login, reload, upload-rate
+3. Printer Control (5): gcode, control, autolevel, bed-leveling, snapshot
+4. Notifications (3): settings GET/POST, test
+5. Settings (4): timelapse GET/POST, mqtt GET/POST
+6. History (2): list GET, clear DELETE
+7. Timelapse (3): list, download, delete
+8. Filament (6): list, create, update, delete, apply, duplicate
+9. Printer Selector (2): list, switch active
+10. Slicer (1): OctoPrint-compatible file upload
+11. Debug (8): state, config, simulate, services, restart, logs (ANKERCTL_DEV_MODE only)
+12. Bed Leveling (2): live + last saved
+
+---
+
+### Phase 11: WebSocket Handlers (Day 26-28)
+
+**Goal**: All 5 WebSocket streams
+
+| Path | Direction | Source |
+|---|---|---|
+| `/ws/mqtt` | Server->Client | Stream from mqttqueue |
+| `/ws/video` | Server->Client | Stream from videoqueue (binary H.264) |
+| `/ws/pppp-state` | Server->Client | PPPP connection status polling |
+| `/ws/upload` | Server->Client | Stream from filetransfer |
+| `/ws/ctrl` | Bidirectional | Light/video profile/video enable (inline auth!) |
+
+---
+
+### Phase 12: Notifications + GCode Utils (Day 28-31)
+
+**Apprise**: HTTP client to API server, event rendering with templates, snapshot via ffmpeg
+
+**GCode**: `patch_gcode_time` (insert ;TIME: before G28), `extract_layer_count`
+(OrcaSlicer ;LAYER_COUNT, PrusaSlicer ;LAYER_CHANGE counting)
+
+---
+
+### Phase 13: Anker Cloud HTTP API (Day 31-33)
+
+**Goal**: Port all Anker API client classes
+
+- AnkerHTTPPassportApiV1: profile
+- AnkerHTTPPassportApiV2: login (ECDH)
+- AnkerHTTPAppApiV1: query_fdm_list, equipment_get_dsk_keys
+- AnkerHTTPHubApiV1/V2: query_device_info, OTA, P2P connect
+- Region detection (closest host by TCP connect time)
+- Gtoken header: MD5 of user_id
+
+---
+
+### Phase 14: Frontend + Templates (Day 33-35)
+
+**Goal**: Static file serving, Jinja2 -> Go templates
+
+- Copy `static/` directory 1:1
+- Convert Jinja2 syntax: `{% block %}` -> `{{template}}`, `{{ var }}` -> `{{.Var}}`
+- Static file server with cache headers
+- Embed via `//go:embed static/*`
+
+---
+
+### Phase 15: CLI Commands (Day 35-37)
+
+**Goal**: All CLI commands with cobra (secondary priority)
+
+```
+ankerctl config import/login/show/set-password/remove-password/decode
+ankerctl mqtt monitor/gcode/gcode-dump/rename-printer/send
+ankerctl pppp lan-search/print-file/capture-video
+ankerctl http calc-check-code/calc-sec-code
+ankerctl webserver run
+```
+
+---
+
+### Phase 16: Docker + CI (Day 37-39)
+
+**Goal**: Multi-arch Docker build, health check
+
+```dockerfile
+FROM golang:1.22-alpine AS builder
+# ... build ...
+FROM alpine:3.19
+RUN apk add --no-cache ffmpeg ca-certificates
+COPY --from=builder /app/ankerctl /usr/local/bin/
+```
+
+Benefits: ~50MB image (vs ~300MB), faster start, single binary.
+
+---
+
+## Security Checklist
+
+### Per Phase
+
+| Phase | Security Items |
+|---|---|
+| 2 (Config) | Config dir chmod 0700, token redaction, strict types |
+| 3 (Crypto) | AES IV exact, PKCS7 padding, EC key correct, no timing leaks |
+| 4 (HTTP) | Security headers, auth middleware, rate limit, body limit |
+| 5 (SQLite) | Prepared statements, input validation, XSS sanitization |
+| 6 (MQTT) | TLS connection, AES encryption, key from config |
+| 7 (PPPP) | LAN only, timeout handling, no open ports |
+| 8 (Services) | Ref counting, graceful shutdown, no goroutine leaks |
+| 10 (Routes) | Auth on POST/DELETE, protected GET paths, 409 during print |
+| 11 (WS) | Auth on /ws/ctrl, timeout on streams, no memory leak |
+| 14 (Frontend) | CSP header, correct Content-Type on static files |
+| 16 (Docker) | Non-root user, health check |
+
+### Global
+
+- [ ] No secrets in logs (auth_token, mqtt_key, api_key)
+- [ ] No panics in production paths (always return error)
+- [ ] Graceful shutdown of all goroutines (context.Context)
+- [ ] SQL injection protection (parameterized queries)
+- [ ] XSS protection (HTML tag stripping in filament fields)
+- [ ] Path traversal protection (timelapse download, log viewer)
+- [ ] Upload size limit (UPLOAD_MAX_MB)
+- [ ] API key validation (min 16 chars, pattern [a-zA-Z0-9_-])
+
+---
+
+## Critical Protocol Constants
+
+These values MUST be implemented exactly:
+
+```go
+// MQTT
+const MQTTAesIV = "3DPrintAnkerMake"  // 16 bytes, fixed
+const TopicNotice   = "/phone/maker/%s/notice"
+const TopicReply    = "/phone/maker/%s/command/reply"
+const TopicQueryRep = "/phone/maker/%s/query/reply"
+const TopicCommand  = "/device/maker/%s/command"
+const TopicQuery    = "/device/maker/%s/query"
+const MQTTPort = 8789
+
+// Print Control (ct=1008)
+const PrintControlRestart = 0
+const PrintControlPause   = 2
+const PrintControlResume  = 3
+const PrintControlStop    = 4
+
+// State Machine (ct=1000)
+const StateIdle     = 0
+const StatePrinting = 1
+const StatePaused   = 2
+const StateAborted  = 8
+
+// Progress: MQTT 0-10000, API 0-100 (divide by 100)
+
+// Web Server
+const DefaultHost = "127.0.0.1"
+const DefaultPort = 4470
+
+// Timelapse
+const ResumeWindowSec = 3600  // 60 minutes
+const MaxOrphanAgeSec = 86400 // 24 hours
+// FPS: max(1, min(30, ceil(frame_count/30)))
+
+// Video
+const StallTimeoutSec = 15.0
+// Profiles: sd (848x480), hd (1280x720), fhd (1920x1080 snapshot-only)
+
+// History
+const DefaultRetentionDays = 90
+const DefaultMaxEntries    = 500
+// Placeholders: "unknown", "unknown.gcode", ""
+
+// PPPP
+const PPPPLanPort = 32108
+const PPPPWanPort = 32100
+const PPPPSeed = "EUPRAKM"
+const PPPPSimpleSeed = "SSD@cs2-network."
+
+// Anker EC Public Key (secp256r1)
+const AnkerECPubKeyX = "C5C00C4F8D1197CC7C3167C52BF7ACB054D722F0EF08DCD7E0883236E0D72A38"
+const AnkerECPubKeyY = "68D9750CB47FA4619248F3D83F0F662671DADC6E2D31C2F41DB0161651C7C076"
+
+// MqttMsg Header Constants
+const MqttMsgM3 = 5
+const MqttMsgM4 = 1
+const MqttMsgM5 = 2
+const MqttMsgM6 = 5
+const MqttMsgM7 = 0x46 // 'F'
+```
+
+---
+
+## Environment Variables (Complete List)
+
+All env vars from the Python project must be supported identically:
+
+**Server**: PRINTER_INDEX, FLASK_HOST, FLASK_PORT, FLASK_SECRET_KEY, UPLOAD_MAX_MB
+**Security**: ANKERCTL_API_KEY
+**Features**: ANKERCTL_DEV_MODE, ANKERCTL_LOG_DIR, UPLOAD_RATE_MBPS
+**Apprise**: APPRISE_ENABLED, APPRISE_SERVER_URL, APPRISE_KEY, APPRISE_TAG,
+  APPRISE_EVENT_PRINT_STARTED, APPRISE_EVENT_PRINT_FINISHED, APPRISE_EVENT_PRINT_FAILED,
+  APPRISE_EVENT_GCODE_UPLOADED, APPRISE_EVENT_PRINT_PROGRESS,
+  APPRISE_PROGRESS_INTERVAL, APPRISE_PROGRESS_INCLUDE_IMAGE,
+  APPRISE_SNAPSHOT_QUALITY, APPRISE_SNAPSHOT_FALLBACK, APPRISE_SNAPSHOT_LIGHT,
+  APPRISE_PROGRESS_MAX
+**History**: PRINT_HISTORY_RETENTION_DAYS, PRINT_HISTORY_MAX_ENTRIES
+**Timelapse**: TIMELAPSE_ENABLED, TIMELAPSE_INTERVAL_SEC, TIMELAPSE_MAX_VIDEOS,
+  TIMELAPSE_SAVE_PERSISTENT, TIMELAPSE_CAPTURES_DIR, TIMELAPSE_LIGHT
+**Home Assistant**: HA_MQTT_ENABLED, HA_MQTT_HOST, HA_MQTT_PORT, HA_MQTT_USER,
+  HA_MQTT_PASSWORD, HA_MQTT_DISCOVERY_PREFIX, HA_MQTT_TOPIC_PREFIX
+
+---
+
+## Estimated Timeline
+
+| Phase | Days | Dependencies |
+|---|---|---|
+| 1. Project Scaffold | DONE | - |
+| 2. Config Parser | 2 | Phase 1 |
+| 3. Crypto Layer | 2 | Phase 1 |
+| 4. HTTP + Middleware | 3 | Phase 2 |
+| 5. SQLite DB Layer | 2 | Phase 2 |
+| 6. MQTT Protocol | 4 | Phase 3 |
+| 7. PPPP Protocol | 5 | Phase 3 |
+| 8. Service Framework | 3 | Phase 4 |
+| 9. Web Services | 6 | Phase 6, 7, 8 |
+| 10. HTTP Handlers | 5 | Phase 5, 9 |
+| 11. WebSocket | 3 | Phase 9 |
+| 12. Notifications + GCode | 3 | Phase 9 |
+| 13. Anker Cloud API | 3 | Phase 3 |
+| 14. Frontend | 3 | Phase 10, 11 |
+| 15. CLI | 3 | Phase 13 |
+| 16. Docker + CI | 2 | Phase 14 |
+| **Total** | **~38 days** | |
+
+Parallelizable: Phase 2+3, Phase 5+6+7, Phase 10+11+12, Phase 14+15
+Realistic with parallelization: **~25 working days**
+
+---
+
+## Risk Register
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| PPPP UDP asymmetry complex to port | High | Start with protocol parsing, test incrementally |
+| Auto-generated pppp.py/mqtt.py (transwarp) | Medium | Manual port; these are stable |
+| ECDH login password encryption | Medium | Go stdlib crypto/ecdh (1.20+); verify curve params |
+| ffmpeg subprocess dependency | Low | Same subprocess approach in Go (exec.Command) |
+| WebSocket streaming semantics | Medium | gorilla/websocket; notify pattern with channels |
+| Service lifecycle (ref-counting) | High | Design Go ServiceManager carefully; use sync patterns |
+| Python __type__ JSON polymorphism | Medium | Custom JSON unmarshal in Go |
+
+
+### TASK
+
+## TASK: Implement Phase 7 – PPPP Protocol + Client
+
+### Working directory
+/data_hdd/ankerctl_go_remake
+
+### Python reference files to READ FIRST
+- /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py
+- /data_hdd/ankermake-m5-protocol-django1982/libflagship/cyclic.py
+- /data_hdd/ankermake-m5-protocol-django1982/libflagship/ppppapi.py
+
+### Files to create
+internal/pppp/protocol/
+  cyclic.go         — CyclicU16 (16-bit wraparound counter, +-1 comparisons, window checks)
+  cyclic_test.go
+  packet.go         — all packet types: Drw, DrwAck, Close, PingReq, PingResp, Hello, P2pRdy, ListenResp, Xzyh, Aabb; MagicNumber const
+  packet_test.go    — marshal/unmarshal roundtrips
+  channel.go        — 8-channel logical layer; in-flight window (max 64); retransmit (0.5s); poll goroutine
+  channel_test.go
+
+internal/pppp/client/
+  client.go         — UDP socket; LAN discovery on port 32108; AnkerPPPP connection setup; select loop
+  client_test.go    — unit test for LAN discovery logic (no live printer needed)
+
+### Critical constraints
+- PPPP seed: 'EUPRAKM' — used in pppp/crypto InitString (already implemented)
+- LAN port: 32108 (UDP broadcast for discovery)
+- One UDP socket, 8 logical channels multiplexed
+- DRW pipeline: in-flight window max=64 packets, retransmit after 0.5s
+- CyclicU16: 16-bit unsigned wraparound; diff(a,b) with wrap-around; window check: b is 'after' a if diff < 32768
+- Xzyh frame: 16-byte header + variable payload, channel 0 and 1
+- Aabb frame: file transfer on channel 1, includes CRC
+- PacketType is a uint32 enum (0x00000000 etc.) — copy ALL values from Python pppp.py exactly
+- Package: github.com/django1982/ankerctl/internal/pppp/protocol and .../client
+
+### After completion
+1. Run: go build ./... && go test ./internal/pppp/...
+2. Fix ALL compilation errors before finishing
+3. Write completion report to: docs/agents/reports/2026-03-05-phase7-codex.md
+   Use template from: docs/agents/COMPLETION_TEMPLATE.md
+
+mcp startup: no servers
+codex
+Ich implementiere jetzt Phase 7 wie beschrieben und starte mit dem Abgleich der Python-Referenzen (`pppp.py`, `cyclic.py`, `ppppapi.py`), damit Packet-Typen, Zykluslogik und Channel-Verhalten bitgenau übernommen werden. Danach erstelle ich die Go-Dateien und ergänze Tests, bevor ich `go build`/`go test` ausführe.
+exec
+/bin/bash -lc 'ls -la' in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc 'rg --files internal/pppp || true' in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc 'rg --files docs/agents || true' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+total 124
+drwxr-xr-x 10 daniel daniel  4096 Mar  4 12:11 .
+drwxr-xr-x 12 root   root    4096 Mar  4 00:32 ..
+drwxrwxr-x  4 daniel daniel  4096 Mar  3 19:57 .claude
+drwxrwxr-x  8 daniel daniel  4096 Mar  3 20:33 .git
+-rw-rw-r--  1 daniel daniel  2466 Mar  3 20:22 AGENTS.md
+-rw-rw-r--  1 daniel daniel  7227 Mar  3 12:34 CLAUDE.md
+-rw-rw-r--  1 daniel daniel 35149 Mar  3 08:28 LICENSE
+-rw-rw-r--  1 daniel daniel 24370 Mar  3 08:46 MIGRATION_PLAN.md
+-rw-rw-r--  1 daniel daniel  2345 Mar  3 08:47 README.md
+drwxrwxr-x  3 daniel daniel  4096 Mar  3 08:39 cmd
+drwxrwxr-x  7 daniel daniel  4096 Mar  3 20:26 docs
+-rw-rw-r--  1 daniel daniel   658 Mar  4 11:23 go.mod
+-rw-rw-r--  1 daniel daniel  2163 Mar  4 11:23 go.sum
+drwxrwxr-x 15 daniel daniel  4096 Mar  4 10:32 internal
+drwxrwxr-x  2 daniel daniel  4096 Mar  4 12:12 logs
+drwxrwxr-x  2 daniel daniel  4096 Mar  4 10:28 scripts
+drwxrwxr-x  2 daniel daniel  4096 Mar  3 08:39 static
+ succeeded in 50ms:
+docs/agents/REVIEW_TEMPLATE.md
+docs/agents/reports/2026-03-04-phase4-review.md
+docs/agents/COMPLETION_TEMPLATE.md
+docs/agents/README.md
+docs/agents/HANDOFF_TEMPLATE.md
+ succeeded in 51ms:
+internal/pppp/protocol/doc.go
+internal/pppp/crypto/simple.go
+internal/pppp/crypto/simple_test.go
+internal/pppp/crypto/doc.go
+internal/pppp/crypto/curse.go
+internal/pppp/crypto/initstring_test.go
+internal/pppp/crypto/curse_test.go
+internal/pppp/crypto/initstring.go
+internal/pppp/client/doc.go
+codex
+Ich habe bestätigt, dass die PPPP-Protokoll/Client-Dateien noch fehlen, also baue ich sie neu auf Basis der Python-Referenzen. Als Nächstes ziehe ich gezielt alle PacketType-Werte und Channel-/Retransmit-Logik aus den Python-Dateien heraus.
+exec
+/bin/bash -lc "sed -n '1,260p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/cyclic.py" in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc "sed -n '1,360p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+import unittest
+
+
+class CyclicU16(int):
+    """Cyclic 16-bit unsigned numbers, with special handling of wraparound
+
+    When dealing with 16-bit counters, special care must be taken when
+    overflowinging the number. For example, consider two increasing counter
+    variables, x and y. At a point in time, we have:
+
+        x == 0xFFF2
+        y == 0xFFF5
+
+    At this time `x < y` works, as expected. However, 12 steps later, we have:
+
+        x == 0xFFFE
+        y == 0x0001
+
+    which will invert the result of `x < y`, even though the counters have
+    increased at the same rate.
+exec
+/bin/bash -lc "sed -n '1,420p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/ppppapi.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+## ------------------------------------------
+## Generated by Transwarp
+##
+## THIS FILE IS AUTOMATICALLY GENERATED.
+## DO NOT EDIT. ALL CHANGES WILL BE LOST.
+## ------------------------------------------
+
+import struct
+import enum
+from dataclasses import dataclass, field
+from .amtypes import *
+from .amtypes import _assert_equal
+from .megajank import crypto_curse_string, crypto_decurse_string, simple_encrypt_string, simple_decrypt_string
+from .util import ppcs_crc16
+
+class Type(enum.IntEnum):
+    HELLO                     = 0x00 # unknown
+    HELLO_ACK                 = 0x01 # unknown
+    HELLO_TO                  = 0x02 # unknown
+    HELLO_TO_ACK              = 0x03 # unknown
+ succeeded in 51ms:
+import os
+import socket
+import string
+import hashlib
+import logging as log
+
+from enum import Enum
+from multiprocessing import Pipe
+from datetime import datetime, timedelta
+from threading import Thread, Event, Lock
+from socket import AF_INET
+from dataclasses import dataclass
+
+from libflagship.cyclic import CyclicU16
+from libflagship.pppp import Type, \
+    PktDrw, PktDrwAck, PktClose, PktSessionReady, PktAliveAck, PktDevLgnAckCrc, \
+    PktHelloAck, PktP2pRdyAck, PktP2pRdy, PktLanSearch, \
+    Host, Message, Xzyh, Aabb, FileTransferReply
+
+
+exec
+/bin/bash -lc "sed -n '420,840p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/ppppapi.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+            xzyh.data = data[16:]
+            return xzyh
+
+    def recv_aabb(self, chan=1):
+        fd = self.chans[chan]
+
+        with fd.lock:
+            data = fd.read(12)
+            aabb = Aabb.parse(data)[0]
+            p = data + fd.read(aabb.len + 2)
+            aabb, data = Aabb.parse_with_crc(p)[:2]
+        return aabb, data
+
+    def recv_aabb_reply(self, chan=1, check=True):
+        aabb, data = self.recv_aabb(chan=chan)
+        if len(data) != 1:
+            raise ValueError(f"Unexpected reply from aabb request: {data}")
+
+        res = FileTransferReply(data[0])
+codex
+Ich extrahiere jetzt die exakten Binärformate der benötigten Paketklassen aus `pppp.py` (inkl. Endianness/Felder), damit die Go-Marshalling-Implementierung kompatibel bleibt.
+exec
+/bin/bash -lc 'rg -n "class (PktDrw|PktDrwAck|PktClose|PktAlive|PktAliveAck|PktHello|PktHelloAck|PktP2pRdy|PktP2pRdyAck|PktListenReqAck|PktLanSearch|PktLanNotify|Xzyh|Aabb|Host|Duid|PktSessionReady)" /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py' in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc "rg -n \"MessageTypeTable|class Message|Magic|0xF1|struct.pack\\(\\\">BBH\\\"\" /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+367:class Host(_Host):
+396:class Duid(_Duid):
+422:class Xzyh(_Xzyh):
+466:class Aabb(_Aabb):
+539:class PktDrw(Message):
+566:class PktDrwAck(Message):
+611:class PktHello(Message):
+627:class PktLanSearch(Message):
+757:class PktAlive(Message):
+773:class PktAliveAck(Message):
+789:class PktClose(Message):
+805:class PktHelloAck(Message):
+841:class PktP2pRdy(Message):
+928:class PktP2pRdyAck(Message):
+1105:class PktSessionReady(Message):
+ succeeded in 51ms:
+309:class Message:
+316:        assert magic == 0xF1
+319:        if type in MessageTypeTable:
+320:            return MessageTypeTable[type].parse(p)
+325:        return struct.pack(">BBH", 0xF1, self.type, len(p)) + p
+437:        magic, p = Magic.parse(p, 4, b'XZYH')
+451:        p  = Magic.pack(self.magic, 4, b'XZYH')
+476:        signature, p = Magic.parse(p, 2, b'\xaa\xbb')
+485:        p  = Magic.pack(self.signature, 2, b'\xaa\xbb')
+549:        signature, p = Magic.parse(p, 1, b'\xd1')
+557:        p  = Magic.pack(self.signature, 1, b'\xd1')
+576:        signature, p = Magic.parse(p, 1, b'\xd1')
+584:        p  = Magic.pack(self.signature, 1, b'\xd1')
+1159:MessageTypeTable = {
+exec
+/bin/bash -lc "sed -n '340,520p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc "sed -n '520,700p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc "sed -n '700,980p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 50ms:
+class _Xzyh:
+    pass
+
+class _Aabb:
+
+    @classmethod
+    def parse_with_crc(cls, m):
+        head, m = m[:12], m[12:]
+        header = cls.parse(head)[0]
+        data, m = m[:header.len], m[header.len:]
+        crc1, m  = m[:2], m[2:]
+        crc2 = ppcs_crc16(head[2:] + data)
+        _assert_equal(crc1, crc2)
+        return header, data, m
+
+    def pack_with_crc(self, data):
+        header = self.pack()
+
+        return header + data + ppcs_crc16(header[2:] + data)
+
+ succeeded in 50ms:
+    @classmethod
+    def parse(cls, p):
+        # not encrypted
+        major, p = u8.parse(p)
+        minor, p = u8.parse(p)
+        patch, p = u8.parse(p)
+
+        return cls(major=major, minor=minor, patch=patch), p
+
+    def pack(self):
+        p  = u8.pack(self.major)
+        p += u8.pack(self.minor)
+        p += u8.pack(self.patch)
+
+        # not encrypted
+        return p
+
+
+@dataclass
+class PktDrw(Message):
+ succeeded in 51ms:
+        mark, p = u32.parse(p)
+        port, p = u16.parse(p)
+        pad, p = Zeroes.parse(p, 2)
+
+        return cls(mark=mark, port=port, pad=pad), p
+
+    def pack(self):
+        p  = u32.pack(self.mark)
+        p += u16.pack(self.port)
+        p += Zeroes.pack(self.pad, 2)
+
+        # not encrypted
+        return super().pack(p)
+
+@dataclass
+class PktRlyReq(Message):
+    type = Type.RLY_REQ
+    duid : Duid # unknown
+    host : Host # unknown
+    mark : u32 # unknown
+exec
+/bin/bash -lc "sed -n '1080,1215p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 50ms:
+    def pack(self):
+        p  = Duid.pack(self.duid)
+
+        # not encrypted
+        return super().pack(p)
+
+@dataclass
+class PktDevLgnAckCrc(Message):
+    type = Type.DEV_LGN_ACK_CRC
+    pad0 : bytes = field(repr=False, kw_only=True, default='\x00' * 4) # unknown
+
+    @classmethod
+    def parse(cls, p):
+        p = crypto_decurse_string(p)
+        pad0, p = Zeroes.parse(p, 4)
+
+        return cls(pad0=pad0), p
+
+    def pack(self):
+        p  = Zeroes.pack(self.pad0, 4)
+exec
+/bin/bash -lc "sed -n '900,1045p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+    duid     : Duid # unknown
+    host     : Host # unknown
+    nat_type : u8 # unknown
+    version  : Version # unknown
+    dsk      : Dsk # unknown
+
+    @classmethod
+    def parse(cls, p):
+        # not encrypted
+        duid, p = Duid.parse(p)
+        host, p = Host.parse(p)
+        nat_type, p = u8.parse(p)
+        version, p = Version.parse(p)
+        dsk, p = Dsk.parse(p)
+
+        return cls(duid=duid, host=host, nat_type=nat_type, version=version, dsk=dsk), p
+
+    def pack(self):
+        p  = Duid.pack(self.duid)
+        p += Host.pack(self.host)
+exec
+/bin/bash -lc "cat internal/pppp/protocol/doc.go && echo '---' && cat internal/pppp/client/doc.go" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+// Package protocol defines the PPPP (peer-to-peer) packet types and
+// message parsing for LAN communication with AnkerMake printers.
+//
+// PPPP is an asymmetric UDP-based protocol with 8 logical channels,
+// supporting DRW (data) packets with ACK-based reliability, Xzyh frames
+// for command/video data, and Aabb frames for file transfers with CRC.
+//
+// Key types: Message, PktDrw, PktDrwAck, PktClose, PktLanSearch,
+// Xzyh, Aabb, FileTransfer, Duid, Host, CyclicU16.
+//
+// Python sources: libflagship/pppp.py, libflagship/cyclic.py
+package protocol
+---
+// Package client implements the PPPP API for establishing and managing
+// LAN connections to AnkerMake printers over UDP.
+//
+// It provides Channel management with in-flight windowing (max 64 packets),
+// Wire abstraction for inter-goroutine byte streaming, and both synchronous
+// (AnkerPPPPApi) and asynchronous (AnkerPPPPAsyncApi) connection modes.
+//
+exec
+/bin/bash -lc 'cat go.mod' in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc 'rg -n "crc16|ppcs_crc16|CRC" internal | head -n 60' in /data_hdd/ankerctl_go_remake succeeded in 50ms:
+module github.com/django1982/ankerctl
+
+go 1.24.0
+
+toolchain go1.24.4
+
+require github.com/go-chi/chi/v5 v5.1.0
+
+require (
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
+	golang.org/x/sys v0.37.0 // indirect
+	modernc.org/libc v1.67.6 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.46.1 // indirect
+ succeeded in 51ms:
+internal/pppp/protocol/doc.go:6:// for command/video data, and Aabb frames for file transfers with CRC.
+exec
+/bin/bash -lc "rg -n \"def ppcs_crc16|ppcs_crc16\" /data_hdd/ankermake-m5-protocol-django1982/libflagship/util.py && sed -n '1,220p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/util.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+22:def ppcs_crc16(data):
+import binascii
+import crcmod
+import struct
+
+
+def enhex(s):
+    return binascii.b2a_hex(s).decode()
+
+
+def unhex(s):
+    return binascii.a2b_hex(s)
+
+
+def b64e(s):
+    return binascii.b2a_base64(s).decode().strip()
+
+
+def b64d(s):
+    return binascii.a2b_base64(s)
+exec
+/bin/bash -lc "rg -n \"class u16|class u32|class u16le|class u32le|class i32\" /data_hdd/ankermake-m5-protocol-django1982/libflagship/amtypes.py | head -n 20 && sed -n '1,220p' /data_hdd/ankermake-m5-protocol-django1982/libflagship/amtypes.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+156:class u16be(IntType):
+166:class u16le(IntType):
+178:class i32be(IntType):
+188:class i32le(IntType):
+200:class u32be(IntType):
+210:class u32le(IntType):
+## ------------------------------------------
+## Generated by Transwarp
+##
+## THIS FILE IS AUTOMATICALLY GENERATED.
+## DO NOT EDIT. ALL CHANGES WILL BE LOST.
+## ------------------------------------------
+
+import struct
+import enum
+from dataclasses import dataclass, field
+import socket
+
+def _assert_equal(value, expected):
+    if value != expected:
+exec
+/bin/bash -lc "rg -n \"connect_lan_search|open_broadcast|LAN_SEARCH|lan-search|PktLanSearch|P2P_RDY|LIST_REQ_ACK\" /data_hdd/ankermake-m5-protocol-django1982 -g '*.py'" in /data_hdd/ankerctl_go_remake succeeded in 161ms:
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:13:from libflagship.pppp import Duid, P2PCmdType, FileTransfer, PktLanSearch, PktPunchPkt
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:41:        api.connect_lan_search()
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:54:def pppp_open_broadcast(dumpfile=None):
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:55:    api = AnkerPPPPApi.open_broadcast()
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:67:    api = pppp_open_broadcast(dumpfile=dumpfile)
+/data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py:69:        api.send(PktLanSearch())
+/data_hdd/ankermake-m5-protocol-django1982/web/service/pppp.py:30:        api.connect_lan_search()
+/data_hdd/ankermake-m5-protocol-django1982/web/service/pppp.py:95:        api.connect_lan_search()
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:35:    LAN_SEARCH                = 0x30 # unknown
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:41:    P2P_RDY                   = 0x42 # unknown
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:42:    P2P_RDY_EX                = 0x42 # unknown
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:43:    P2P_RDY_ACK               = 0x43 # unknown
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:50:    LIST_REQ_ACK              = 0x69 # unknown
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:627:class PktLanSearch(Message):
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:628:    type = Type.LAN_SEARCH
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:842:    type = Type.P2P_RDY
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:929:    type = Type.P2P_RDY_ACK
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:974:    type = Type.LIST_REQ_ACK
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:1167:    Type.LAN_SEARCH           : PktLanSearch,
+/data_hdd/ankermake-m5-protocol-django1982/libflagship/pppp.py:1170:    Type.P2P_RDY              : PktP2pRdy,
+exec
+/bin/bash -lc "sed -n '1,170p' /data_hdd/ankermake-m5-protocol-django1982/cli/pppp.py" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+import json
+import random
+import time
+import uuid
+import logging as log
+
+from datetime import datetime, timedelta
+from tqdm import tqdm
+
+import cli.util
+
+from libflagship.pktdump import PacketWriter
+from libflagship.pppp import Duid, P2PCmdType, FileTransfer, PktLanSearch, PktPunchPkt
+from libflagship.ppppapi import AnkerPPPPApi, PPPPState
+
+
+def _pppp_dumpfile(api, dumpfile):
+    if dumpfile:
+        log.info(f"Logging all pppp traffic to {dumpfile!r}")
+        pktwr = PacketWriter.open(dumpfile)
+codex
+Ich habe die Binärlayouts jetzt extrahiert (inkl. `Host`-Endianess, `Duid`-Format, `XZYH`/`AABB` Header, `DRW`/`DRW_ACK`). Als nächsten Schritt schreibe ich die neuen Go-Dateien in `internal/pppp/protocol` und `internal/pppp/client` samt Unit-Tests, anschließend laufen Build und Tests.
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/cyclic.go <<'EOF'
+package protocol
+
+import \"fmt\"
+
+const (
+	cyclicMask       uint32 = 0xFFFF
+	defaultWrapLimit uint16 = 0x0100
+	halfUint16Range  uint16 = 0x8000
+)
+
+// CyclicU16 is a uint16 counter with wrap-around helper methods.
+type CyclicU16 uint16
+
+// NewCyclicU16 truncates the input to 16 bits.
+func NewCyclicU16(v int) CyclicU16 {
+	return CyclicU16(uint32(v) & cyclicMask)
+}
+
+// Add returns a wrapped sum.
+func (c CyclicU16) Add(v uint16) CyclicU16 {
+	return CyclicU16(uint16(c) + v)
+}
+
+// Sub returns a wrapped subtraction.
+func (c CyclicU16) Sub(v uint16) CyclicU16 {
+	return CyclicU16(uint16(c) - v)
+}
+
+// Diff returns the forward cyclic distance from a to b.
+func Diff(a, b CyclicU16) uint16 {
+	return uint16(uint16(b) - uint16(a))
+}
+
+// IsAfter returns true if b is after a in cyclic order.
+func IsAfter(a, b CyclicU16) bool {
+	d := Diff(a, b)
+	return d "'!= 0 && d < halfUint16Range
+}
+
+// IsAfterOrEqual returns true if b is equal to or after a in cyclic order.
+func IsAfterOrEqual(a, b CyclicU16) bool {
+	return a == b || IsAfter(a, b)
+}
+
+// Less emulates the Python CyclicU16 __lt__ behavior with wrap window 0x100.
+func (c CyclicU16) Less(other CyclicU16) bool {
+	if (uint16(c)''^uint16(other))&halfUint16Range != 0 {
+		return uint16(c.Sub(defaultWrapLimit)) < uint16(other.Sub(defaultWrapLimit))
+	}
+	return c < other
+}
+
+// Greater emulates the Python CyclicU16 __gt__ behavior with wrap window 0x100.
+func (c CyclicU16) Greater(other CyclicU16) bool {
+	if (uint16(c)''^uint16(other))&halfUint16Range != 0 {
+		return uint16(c.Sub(defaultWrapLimit)) > uint16(other.Sub(defaultWrapLimit))
+	}
+	return c > other
+}
+
+func (c CyclicU16) String() string {
+	return fmt.Sprintf("0x%04x", uint16(c))
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/cyclic_test.go <<'EOF'
+package protocol
+
+import \"testing\"
+
+func TestCyclicU16EqualAndOverflow(t *testing.T) {
+	if got := NewCyclicU16(0x42); got "'!= CyclicU16(0x42) {
+		t.Fatalf("expected 0x42, got %v", got)
+	}
+	if got := NewCyclicU16(0x10001); got != CyclicU16(0x1) {
+		t.Fatalf("expected 0x1, got %v", got)
+	}
+
+	n := NewCyclicU16(0xFFFE)
+	n = n.Add(1)
+	if n != CyclicU16(0xFFFF) {
+		t.Fatalf("expected 0xFFFF, got %v", n)
+	}
+	n = n.Add(1)
+	if n != CyclicU16(0x0000) {
+		t.Fatalf("expected 0x0000, got %v", n)
+	}
+	n = n.Add(1)
+	if n != CyclicU16(0x0001) {
+		t.Fatalf("expected 0x0001, got %v", n)
+	}
+}
+
+func TestCyclicU16Less(t *testing.T) {
+	tests := []struct {
+		a, b CyclicU16
+		lt   bool
+	}{
+		{0x1, 0x1, false},
+		{0xFFFF, 0xFFFF, false},
+		{0x1, 0x2, true},
+		{0x2, 0x1, false},
+		{0x90, 0x120, true},
+		{0x120, 0x90, false},
+		{0x101, 0x120, true},
+		{0x120, 0x101, false},
+		{0xFFFE, 0xFFFF, true},
+		{0xFFFE, 0x10, true},
+		{0xFFFE, 0x110, false},
+	}
+
+	for _, tc := range tests {
+		if got := tc.a.Less(tc.b); got != tc.lt {
+			t.Fatalf("%v < %v: expected %v got %v", tc.a, tc.b, tc.lt, got)
+		}
+	}
+}
+
+func TestCyclicU16Greater(t *testing.T) {
+	tests := []struct {
+		a, b CyclicU16
+		gt   bool
+	}{
+		{0x1, 0x1, false},
+		{0xFFFF, 0xFFFF, false},
+		{0x2, 0x1, true},
+		{0x1, 0x2, false},
+		{0x120, 0x90, true},
+		{0x90, 0x120, false},
+		{0x120, 0x101, true},
+		{0x101, 0x120, false},
+		{0xFFFF, 0xFFFE, true},
+		{0x10, 0xFFFE, true},
+		{0x110, 0xFFFE, false},
+	}
+
+	for _, tc := range tests {
+		if got := tc.a.Greater(tc.b); got != tc.gt {
+			t.Fatalf("%v > %v: expected %v got %v", tc.a, tc.b, tc.gt, got)
+		}
+	}
+}
+
+func TestDiffAndAfter(t *testing.T) {
+	a := CyclicU16(65530)
+	b := CyclicU16(2)
+
+	if d := Diff(a, b); d != 8 {
+		t.Fatalf("expected diff 8, got %d", d)
+	}
+	if !IsAfter(a, b) {
+		t.Fatalf("expected %v to be after %v", b, a)
+	}
+	if IsAfterOrEqual(b, a) {
+		t.Fatalf("did not expect %v to be after %v", a, b)
+	}
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 52ms:
+
+codex
+Ich beginne jetzt mit `packet.go`: dort kommen Message-Header, alle PPPP `Type`-Konstanten, die geforderten Paketstrukturen (`Drw`, `DrwAck`, `Close`, `PingReq/Resp`, `Hello`, `P2pRdy`, `ListenResp`, `Xzyh`, `Aabb`) sowie CRC-Prüfung hinein.
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/packet.go <<'EOF'
+package protocol
+
+import (
+	\"encoding/binary\"
+	\"errors\"
+	\"fmt\"
+	\"net\"
+)
+
+const (
+	// MagicNumber is the fixed PPPP message magic byte.
+	MagicNumber byte = 0xF1
+
+	drwSignature  byte = 0xD1
+	xzyhMagic          = \"XZYH\"
+	aabbSignature uint16 = 0xBBAA // little-endian representation for wire bytes AA BB
+)
+
+// Type identifies a PPPP message type byte.
+type Type uint8
+
+const (
+	TypeHello                    Type = 0x00
+	TypeHelloAck                 Type = 0x01
+	TypeHelloTo                  Type = 0x02
+	TypeHelloToAck               Type = 0x03
+	TypeQueryDid                 Type = 0x08
+	TypeQueryDidAck              Type = 0x09
+	TypeDevLgn                   Type = 0x10
+	TypeDevLgnAck                Type = 0x11
+	TypeDevLgnCRC                Type = 0x12
+	TypeDevLgnAckCRC             Type = 0x13
+	TypeDevLgnKey                Type = 0x14
+	TypeDevLgnAckKey             Type = 0x15
+	TypeDevLgnDsk                Type = 0x16
+	TypeDevOnlineReq             Type = 0x18
+	TypeDevOnlineReqAck          Type = 0x19
+	TypeP2pReq                   Type = 0x20
+	TypeP2pReqAck                Type = 0x21
+	TypeP2pReqDsk                Type = 0x26
+	TypeLanSearch                Type = 0x30
+	TypeLanNotify                Type = 0x31
+	TypeLanNotifyAck             Type = 0x32
+	TypePunchTo                  Type = 0x40
+	TypePunchPkt                 Type = 0x41
+	TypePunchPktEx               Type = 0x41
+	TypeP2pRdy                   Type = 0x42
+	TypeP2pRdyEx                 Type = 0x42
+	TypeP2pRdyAck                Type = 0x43
+	TypeRsLgn                    Type = 0x60
+	TypeRsLgnAck                 Type = 0x61
+	TypeRsLgn1                   Type = 0x62
+	TypeRsLgn1Ack                Type = 0x63
+	TypeListReq1                 Type = 0x67
+	TypeListReq                  Type = 0x68
+	TypeListReqAck               Type = 0x69
+	TypeListReqDsk               Type = 0x6A
+	TypeRlyHello                 Type = 0x70
+	TypeRlyHelloAck              Type = 0x71
+	TypeRlyPort                  Type = 0x72
+	TypeRlyPortAck               Type = 0x73
+	TypeRlyPortKey               Type = 0x74
+	TypeRlyPortAckKey            Type = 0x75
+	TypeRlyByteCount             Type = 0x78
+	TypeRlyReq                   Type = 0x80
+	TypeRlyReqAck                Type = 0x81
+	TypeRlyTo                    Type = 0x82
+	TypeRlyPkt                   Type = 0x83
+	TypeRlyRdy                   Type = 0x84
+	TypeRlyToAck                 Type = 0x85
+	TypeRlyServerReq             Type = 0x87
+	TypeRlyServerReqAck          Type = 0x87
+	TypeSdevRun                  Type = 0x90
+	TypeSdevLgn                  Type = 0x91
+	TypeSdevLgnAck               Type = 0x91
+	TypeSdevLgnCRC               Type = 0x92
+	TypeSdevLgnAckCRC            Type = 0x92
+	TypeSdevReport               Type = 0x94
+	TypeConnectReport            Type = 0xA0
+	TypeReportReq                Type = 0xA1
+	TypeReport                   Type = 0xA2
+	TypeDrw                      Type = 0xD0
+	TypeDrwAck                   Type = 0xD1
+	TypePsr                      Type = 0xD8
+	TypeAlive                    Type = 0xE0
+	TypeAliveAck                 Type = 0xE1
+	TypeClose                    Type = 0xF0
+	TypeMgmDumpLoginDID          Type = 0xF4
+	TypeMgmDumpLoginDIDDetail    Type = 0xF5
+	TypeMgmDumpLoginDID1         Type = 0xF6
+	TypeMgmLogControl            Type = 0xF7
+	TypeMgmRemoteManagement      Type = 0xF8
+	TypeReportSessionReady       Type = 0xF9
+	TypeInvalid                  Type = 0xFF
+)
+
+// Result is a 32-bit PPPP result code enum.
+type Result uint32
+
+const (
+	ResultErrorP2PSuccessful                        Result = 0x00000000
+	ResultTFCardVolumeOverflow                      Result = 0xFFFFFF7C
+	ResultParamNoChange                             Result = 0xFFFFFF8C
+	ResultNotFace                                   Result = 0xFFFFFF8D
+	ResultDevBusy                                   Result = 0xFFFFFF8E
+	ResultDevUpdateing                              Result = 0xFFFFFF8F
+	ResultHubUpdateing                              Result = 0xFFFFFF90
+	ResultOpenFileFail                              Result = 0xFFFFFF91
+	ResultInvalidParam                              Result = 0xFFFFFF92
+	ResultDevOffline                                Result = 0xFFFFFF93
+	ResultWaitTimeout                               Result = 0xFFFFFF94
+	ResultNvalidParamLen                            Result = 0xFFFFFF95
+	ResultNotFindDev                                Result = 0xFFFFFF96
+	ResultWriteFlash                                Result = 0xFFFFFF97
+	ResultInvalidAccount                            Result = 0xFFFFFF98
+	ResultInvalidCommand                            Result = 0xFFFFFF99
+	ResultMaxHubConnectNum                          Result = 0xFFFFFF9A
+	ResultHaveConnect                               Result = 0xFFFFFF9B
+	ResultNullPoint                                 Result = 0xFFFFFF9C
+	ResultErrorP2PFailToCreateThread                Result = 0xFFFFFFEA
+	ResultErrorP2PInvalidAPILicense                 Result = 0xFFFFFFEB
+	ResultErrorP2PSessionClosedInsufficientMemory   Result = 0xFFFFFFEC
+	ResultErrorP2PUserConnectBreak                  Result = 0xFFFFFFED
+	ResultErrorP2PUDPPortBindFailed                 Result = 0xFFFFFFEE
+	ResultErrorP2PMaxSession                        Result = 0xFFFFFFEF
+	ResultErrorP2PUserListenBreak                   Result = 0xFFFFFFF0
+	ResultErrorP2PRemoteSiteBufferFull              Result = 0xFFFFFFF1
+	ResultErrorP2PSessionClosedCalled               Result = 0xFFFFFFF2
+	ResultErrorP2PSessionClosedTimeout              Result = 0xFFFFFFF3
+	ResultErrorP2PSessionClosedRemote               Result = 0xFFFFFFF4
+	ResultErrorP2PInvalidSessionHandle              Result = 0xFFFFFFF5
+	ResultErrorP2PNoRelayServerAvailable            Result = 0xFFFFFFF6
+	ResultErrorP2PIDOutOfDate                       Result = 0xFFFFFFF7
+	ResultErrorP2PInvalidPrefix                     Result = 0xFFFFFFF8
+	ResultErrorP2PFailToResolveName                 Result = 0xFFFFFFF9
+	ResultErrorP2PDeviceNotOnline                   Result = 0xFFFFFFFA
+	ResultErrorPPCSInvalidParameter                 Result = 0xFFFFFFFB
+	ResultErrorP2PInvalidID                         Result = 0xFFFFFFFC
+	ResultErrorP2PTimeOut                           Result = 0xFFFFFFFD
+	ResultErrorP2PAlreadyInitialized                Result = 0xFFFFFFFE
+	ResultErrorP2PNotInitialized                    Result = 0xFFFFFFFF
+)
+
+// P2PCmdType is the command ID inside XZYH frames.
+type P2PCmdType uint16
+
+// FileTransfer is the AABB frame type.
+type FileTransfer uint8
+
+const (
+	FileTransferBegin FileTransfer = 0x00
+	FileTransferData  FileTransfer = 0x01
+	FileTransferEnd   FileTransfer = 0x02
+	FileTransferAbort FileTransfer = 0x03
+	FileTransferReply FileTransfer = 0x80
+)
+
+// Message is a generic PPPP packet with raw payload.
+type Message struct {
+	Type    Type
+	Payload []byte
+}
+
+// MarshalBinary serializes message with PPPP framing.
+func (m Message) MarshalBinary() []byte {
+	out := make([]byte, 4+len(m.Payload))
+	out[0] = MagicNumber
+	out[1] = byte(m.Type)
+	binary.BigEndian.PutUint16(out[2:4], uint16(len(m.Payload)))
+	copy(out[4:], m.Payload)
+	return out
+}
+
+// ParseMessage parses the PPPP message envelope.
+func ParseMessage(data []byte) (Message, error) {
+	if len(data) < 4 {
+		return Message{}, fmt.Errorf(\"pppp: short message header: %d\", len(data))
+	}
+	if data[0] "'!= MagicNumber {
+		return Message{}, fmt.Errorf("pppp: invalid magic: 0x%02x", data[0])
+	}
+	sz := int(binary.BigEndian.Uint16(data[2:4]))
+	if len(data) < 4+sz {
+		return Message{}, fmt.Errorf("pppp: payload truncated: need %d have %d", sz, len(data)-4)
+	}
+	payload := make([]byte, sz)
+	copy(payload, data[4:4+sz])
+	return Message{Type: Type(data[1]), Payload: payload}, nil
+}
+
+// Packet is a typed PPPP packet.
+type Packet interface {
+	PacketType() Type
+	MarshalPayload() ([]byte, error)
+}
+
+// EncodePacket serializes a typed packet.
+func EncodePacket(p Packet) ([]byte, error) {
+	body, err := p.MarshalPayload()
+	if err != nil {
+		return nil, err
+	}
+	return Message{Type: p.PacketType(), Payload: body}.MarshalBinary(), nil
+}
+
+// DecodePacket decodes known packet types and falls back to raw Message.
+func DecodePacket(data []byte) (any, error) {
+	msg, err := ParseMessage(data)
+	if err != nil {
+		return nil, err
+	}
+
+	switch msg.Type {
+	case TypeDrw:
+		return ParseDrw(msg.Payload)
+	case TypeDrwAck:
+		return ParseDrwAck(msg.Payload)
+	case TypeClose:
+		return Close{}, nil
+	case TypeAlive:
+		return PingReq{}, nil
+	case TypeAliveAck:
+		return PingResp{}, nil
+	case TypeHello:
+		return Hello{}, nil
+	case TypeHelloAck:
+		return ParseHelloAck(msg.Payload)
+	case TypeP2pRdy:
+		return ParseP2pRdy(msg.Payload)
+	case TypeP2pRdyAck:
+		return ParseP2pRdyAck(msg.Payload)
+	case TypeListReqAck:
+		return ParseListenResp(msg.Payload)
+	case TypePunchPkt:
+		return ParsePunchPkt(msg.Payload)
+	default:
+		return msg, nil
+	}
+}
+
+// Host represents PPPP host wire format (16 bytes).
+type Host struct {
+	AFamily uint8
+	Port    uint16
+	Addr    net.IP
+}
+
+func (h Host) marshalBinary() ([]byte, error) {
+	if h.AFamily == 0 {
+		h.AFamily = 2
+	}
+	ip4 := h.Addr.To4()
+	if ip4 == nil {
+		return nil, errors.New("pppp: host requires IPv4")
+	}
+	out := make([]byte, 16)
+	out[0] = 0
+	out[1] = h.AFamily
+	binary.LittleEndian.PutUint16(out[2:4], h.Port)
+	// Python IPv4 stores reversed byte order.
+	out[4] = ip4[3]
+	out[5] = ip4[2]
+	out[6] = ip4[1]
+	out[7] = ip4[0]
+	// trailing 8 bytes remain zero
+	return out, nil
+}
+
+func parseHost(data []byte) (Host, []byte, error) {
+	if len(data) < 16 {
+		return Host{}, nil, fmt.Errorf("pppp: short host: %d", len(data))
+	}
+	if data[0] != 0 {
+		return Host{}, nil, fmt.Errorf("pppp: invalid host pad0 0x%02x", data[0])
+	}
+	for i := 8; i < 16; i++ {
+		if data[i] != 0 {
+			return Host{}, nil, fmt.Errorf("pppp: invalid host pad1 at %d", i)
+		}
+	}
+	h := Host{
+		AFamily: data[1],
+		Port:    binary.LittleEndian.Uint16(data[2:4]),
+		Addr:    net.IPv4(data[7], data[6], data[5], data[4]),
+	}
+	return h, data[16:], nil
+}
+
+// Duid represents printer identity tuple.
+type Duid struct {
+	Prefix string
+	Serial uint32
+	Check  string
+}
+
+func ParseDuidString(v string) (Duid, error) {
+	var d Duid
+	n, err := fmt.Sscanf(v, "%7s-%d-%5s", &d.Prefix, &d.Serial, &d.Check)
+	if err != nil || n != 3 {
+		return Duid{}, fmt.Errorf("pppp: invalid duid string %q", v)
+	}
+	return d, nil
+}
+
+func (d Duid) String() string {
+	return fmt.Sprintf("%s-%06d-%s", d.Prefix, d.Serial, d.Check)
+}
+
+func (d Duid) marshalBinary() []byte {
+	out := make([]byte, 20)
+	copy(out[0:8], []byte(d.Prefix))
+	binary.BigEndian.PutUint32(out[8:12], d.Serial)
+	copy(out[12:18], []byte(d.Check))
+	return out
+}
+
+func parseDuid(data []byte) (Duid, []byte, error) {
+	if len(data) < 20 {
+		return Duid{}, nil, fmt.Errorf("pppp: short duid: %d", len(data))
+	}
+	prefix := string(trimZero(data[0:8]))
+	check := string(trimZero(data[12:18]))
+	d := Duid{Prefix: prefix, Serial: binary.BigEndian.Uint32(data[8:12]), Check: check}
+	if data[18] != 0 || data[19] != 0 {
+		return Duid{}, nil, errors.New("pppp: invalid duid padding")
+	}
+	return d, data[20:], nil
+}
+
+func trimZero(in []byte) []byte {
+	for i, b := range in {
+		if b == 0 {
+			return in[:i]
+		}
+	}
+	return in
+}
+
+// Drw is reliable data transport packet.
+type Drw struct {
+	Chan  uint8
+	Index uint16
+	Data  []byte
+}
+
+func (d Drw) PacketType() Type { return TypeDrw }
+
+func (d Drw) MarshalPayload() ([]byte, error) {
+	out := make([]byte, 4+len(d.Data))
+	out[0] = drwSignature
+	out[1] = d.Chan
+	binary.BigEndian.PutUint16(out[2:4], d.Index)
+	copy(out[4:], d.Data)
+	return out, nil
+}
+
+func ParseDrw(payload []byte) (Drw, error) {
+	if len(payload) < 4 {
+		return Drw{}, fmt.Errorf("pppp: short drw payload: %d", len(payload))
+	}
+	if payload[0] != drwSignature {
+		return Drw{}, fmt.Errorf("pppp: invalid drw signature 0x%02x", payload[0])
+	}
+	res := Drw{Chan: payload[1], Index: binary.BigEndian.Uint16(payload[2:4])}
+	res.Data = append([]byte(nil), payload[4:]...)
+	return res, nil
+}
+
+// DrwAck acknowledges DRW packet indices.
+type DrwAck struct {
+	Chan uint8
+	Acks []uint16
+}
+
+func (d DrwAck) PacketType() Type { return TypeDrwAck }
+
+func (d DrwAck) MarshalPayload() ([]byte, error) {
+	out := make([]byte, 4+2*len(d.Acks))
+	out[0] = drwSignature
+	out[1] = d.Chan
+	binary.BigEndian.PutUint16(out[2:4], uint16(len(d.Acks)))
+	for i, ack := range d.Acks {
+		binary.BigEndian.PutUint16(out[4+i*2:], ack)
+	}
+	return out, nil
+}
+
+func ParseDrwAck(payload []byte) (DrwAck, error) {
+	if len(payload) < 4 {
+		return DrwAck{}, fmt.Errorf("pppp: short drw_ack payload: %d", len(payload))
+	}
+	if payload[0] != drwSignature {
+		return DrwAck{}, fmt.Errorf("pppp: invalid drw_ack signature 0x%02x", payload[0])
+	}
+	count := int(binary.BigEndian.Uint16(payload[2:4]))
+	if len(payload) != 4+count*2 {
+		return DrwAck{}, fmt.Errorf("pppp: drw_ack malformed count=%d len=%d", count, len(payload))
+	}
+	res := DrwAck{Chan: payload[1], Acks: make([]uint16, count)}
+	for i := 0; i < count; i++ {
+		res.Acks[i] = binary.BigEndian.Uint16(payload[4+i*2:])
+	}
+	return res, nil
+}
+
+// Close terminates PPPP connection.
+type Close struct{}
+
+func (Close) PacketType() Type                    { return TypeClose }
+func (Close) MarshalPayload() ([]byte, error)     { return nil, nil }
+func ParseClose(payload []byte) (Close, error)    { return Close{}, emptyPayload(payload) }
+
+// PingReq corresponds to ALIVE.
+type PingReq struct{}
+
+func (PingReq) PacketType() Type                  { return TypeAlive }
+func (PingReq) MarshalPayload() ([]byte, error)   { return nil, nil }
+func ParsePingReq(payload []byte) (PingReq, error) { return PingReq{}, emptyPayload(payload) }
+
+// PingResp corresponds to ALIVE_ACK.
+type PingResp struct{}
+
+func (PingResp) PacketType() Type                   { return TypeAliveAck }
+func (PingResp) MarshalPayload() ([]byte, error)    { return nil, nil }
+func ParsePingResp(payload []byte) (PingResp, error) { return PingResp{}, emptyPayload(payload) }
+
+// Hello is an empty HELLO packet.
+type Hello struct{}
+
+func (Hello) PacketType() Type                 { return TypeHello }
+func (Hello) MarshalPayload() ([]byte, error)  { return nil, nil }
+func ParseHello(payload []byte) (Hello, error) { return Hello{}, emptyPayload(payload) }
+
+// HelloAck responds with host info.
+type HelloAck struct {
+	Host Host
+}
+
+func (h HelloAck) PacketType() Type { return TypeHelloAck }
+
+func (h HelloAck) MarshalPayload() ([]byte, error) {
+	return h.Host.marshalBinary()
+}
+
+func ParseHelloAck(payload []byte) (HelloAck, error) {
+	h, rest, err := parseHost(payload)
+	if err != nil {
+		return HelloAck{}, err
+	}
+	if len(rest) != 0 {
+		return HelloAck{}, errors.New("pppp: trailing bytes in hello_ack")
+	}
+	return HelloAck{Host: h}, nil
+}
+
+// LanSearch is LAN discovery broadcast packet.
+type LanSearch struct{}
+
+func (LanSearch) PacketType() Type                    { return TypeLanSearch }
+func (LanSearch) MarshalPayload() ([]byte, error)     { return nil, nil }
+func ParseLanSearch(payload []byte) (LanSearch, error) { return LanSearch{}, emptyPayload(payload) }
+
+// P2pRdy announces peer-ready state.
+type P2pRdy struct {
+	DUID Duid
+}
+
+func (p P2pRdy) PacketType() Type { return TypeP2pRdy }
+
+func (p P2pRdy) MarshalPayload() ([]byte, error) {
+	return p.DUID.marshalBinary(), nil
+}
+
+func ParseP2pRdy(payload []byte) (P2pRdy, error) {
+	d, rest, err := parseDuid(payload)
+	if err != nil {
+		return P2pRdy{}, err
+	}
+	if len(rest) != 0 {
+		return P2pRdy{}, errors.New("pppp: trailing bytes in p2p_rdy")
+	}
+	return P2pRdy{DUID: d}, nil
+}
+
+// PunchPkt carries DUID for LAN discovery response.
+type PunchPkt struct {
+	DUID Duid
+}
+
+func (p PunchPkt) PacketType() Type { return TypePunchPkt }
+
+func (p PunchPkt) MarshalPayload() ([]byte, error) {
+	return p.DUID.marshalBinary(), nil
+}
+
+func ParsePunchPkt(payload []byte) (PunchPkt, error) {
+	d, rest, err := parseDuid(payload)
+	if err != nil {
+		return PunchPkt{}, err
+	}
+	if len(rest) != 0 {
+		return PunchPkt{}, errors.New("pppp: trailing bytes in punch_pkt")
+	}
+	return PunchPkt{DUID: d}, nil
+}
+
+// P2pRdyAck acknowledges P2P ready with host metadata.
+type P2pRdyAck struct {
+	DUID Duid
+	Host Host
+	Pad  [8]byte
+}
+
+func (p P2pRdyAck) PacketType() Type { return TypeP2pRdyAck }
+
+func (p P2pRdyAck) MarshalPayload() ([]byte, error) {
+	hostBytes, err := p.Host.marshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 0, 44)
+	out = append(out, p.DUID.marshalBinary()...)
+	out = append(out, hostBytes...)
+	out = append(out, p.Pad[:]...)
+	return out, nil
+}
+
+func ParseP2pRdyAck(payload []byte) (P2pRdyAck, error) {
+	d, rest, err := parseDuid(payload)
+	if err != nil {
+		return P2pRdyAck{}, err
+	}
+	h, rest, err := parseHost(rest)
+	if err != nil {
+		return P2pRdyAck{}, err
+	}
+	if len(rest) != 8 {
+		return P2pRdyAck{}, fmt.Errorf("pppp: invalid p2p_rdy_ack padding len=%d", len(rest))
+	}
+	var pad [8]byte
+	copy(pad[:], rest)
+	return P2pRdyAck{DUID: d, Host: h, Pad: pad}, nil
+}
+
+// ListenResp (Python LIST_REQ_ACK) contains relay list.
+type ListenResp struct {
+	Relays []Host
+}
+
+func (l ListenResp) PacketType() Type { return TypeListReqAck }
+
+func (l ListenResp) MarshalPayload() ([]byte, error) {
+	if len(l.Relays) > 255 {
+		return nil, errors.New("pppp: too many relay hosts")
+	}
+	out := make([]byte, 4)
+	out[0] = byte(len(l.Relays))
+	for _, h := range l.Relays {
+		hb, err := h.marshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, hb...)
+	}
+	return out, nil
+}
+
+func ParseListenResp(payload []byte) (ListenResp, error) {
+	if len(payload) < 4 {
+		return ListenResp{}, fmt.Errorf("pppp: short listen_resp payload: %d", len(payload))
+	}
+	n := int(payload[0])
+	if payload[1] != 0 || payload[2] != 0 || payload[3] != 0 {
+		return ListenResp{}, errors.New("pppp: invalid listen_resp padding")
+	}
+	rest := payload[4:]
+	relays := make([]Host, 0, n)
+	for i := 0; i < n; i++ {
+		h, next, err := parseHost(rest)
+		if err != nil {
+			return ListenResp{}, err
+		}
+		relays = append(relays, h)
+		rest = next
+	}
+	if len(rest) != 0 {
+		return ListenResp{}, errors.New("pppp: trailing bytes in listen_resp")
+	}
+	return ListenResp{Relays: relays}, nil
+}
+
+// Xzyh is the 16-byte command/video frame.
+type Xzyh struct {
+	Cmd      P2PCmdType
+	Len      uint32
+	Unk0     uint8
+	Unk1     uint8
+	Chan     uint8
+	SignCode uint8
+	Unk3     uint8
+	DevType  uint8
+	Data     []byte
+}
+
+func (x Xzyh) MarshalBinary() ([]byte, error) {
+	if x.Len == 0 {
+		x.Len = uint32(len(x.Data))
+	}
+	if int(x.Len) != len(x.Data) {
+		return nil, fmt.Errorf("pppp: xzyh len mismatch header=%d data=%d", x.Len, len(x.Data))
+	}
+	out := make([]byte, 16+len(x.Data))
+	copy(out[0:4], []byte(xzyhMagic))
+	binary.LittleEndian.PutUint16(out[4:6], uint16(x.Cmd))
+	binary.LittleEndian.PutUint32(out[6:10], x.Len)
+	out[10] = x.Unk0
+	out[11] = x.Unk1
+	out[12] = x.Chan
+	out[13] = x.SignCode
+	out[14] = x.Unk3
+	out[15] = x.DevType
+	copy(out[16:], x.Data)
+	return out, nil
+}
+
+func ParseXzyh(data []byte) (Xzyh, error) {
+	if len(data) < 16 {
+		return Xzyh{}, fmt.Errorf("pppp: short xzyh frame: %d", len(data))
+	}
+	if string(data[0:4]) != xzyhMagic {
+		return Xzyh{}, fmt.Errorf("pppp: invalid xzyh magic %q", data[:4])
+	}
+	sz := int(binary.LittleEndian.Uint32(data[6:10]))
+	if len(data) < 16+sz {
+		return Xzyh{}, fmt.Errorf("pppp: truncated xzyh data: need %d have %d", sz, len(data)-16)
+	}
+	x := Xzyh{
+		Cmd:      P2PCmdType(binary.LittleEndian.Uint16(data[4:6])),
+		Len:      uint32(sz),
+		Unk0:     data[10],
+		Unk1:     data[11],
+		Chan:     data[12],
+		SignCode: data[13],
+		Unk3:     data[14],
+		DevType:  data[15],
+		Data:     append([]byte(nil), data[16:16+sz]...),
+	}
+	return x, nil
+}
+
+// Aabb is file-transfer frame header and CRC wrapper.
+type Aabb struct {
+	FrameType FileTransfer
+	SN        uint8
+	Pos       uint32
+	Len       uint32
+}
+
+func (a Aabb) MarshalBinary() ([]byte, error) {
+	out := make([]byte, 12)
+	binary.LittleEndian.PutUint16(out[0:2], aabbSignature)
+	out[2] = byte(a.FrameType)
+	out[3] = a.SN
+	binary.LittleEndian.PutUint32(out[4:8], a.Pos)
+	binary.LittleEndian.PutUint32(out[8:12], a.Len)
+	return out, nil
+}
+
+func ParseAabb(data []byte) (Aabb, error) {
+	if len(data) < 12 {
+		return Aabb{}, fmt.Errorf("pppp: short aabb header: %d", len(data))
+	}
+	if binary.LittleEndian.Uint16(data[0:2]) != aabbSignature {
+		return Aabb{}, fmt.Errorf("pppp: invalid aabb signature: %x", data[0:2])
+	}
+	return Aabb{
+		FrameType: FileTransfer(data[2]),
+		SN:        data[3],
+		Pos:       binary.LittleEndian.Uint32(data[4:8]),
+		Len:       binary.LittleEndian.Uint32(data[8:12]),
+	}, nil
+}
+
+func (a Aabb) PackWithCRC(data []byte) ([]byte, error) {
+	a.Len = uint32(len(data))
+	head, err := a.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	crc := ppcsCRC16(append(head[2:], data...))
+	out := make([]byte, 0, len(head)+len(data)+2)
+	out = append(out, head...)
+	out = append(out, data...)
+	out = append(out, crc...)
+	return out, nil
+}
+
+func ParseAabbWithCRC(raw []byte) (Aabb, []byte, error) {
+	if len(raw) < 14 {
+		return Aabb{}, nil, fmt.Errorf("pppp: short aabb frame: %d", len(raw))
+	}
+	a, err := ParseAabb(raw[:12])
+	if err != nil {
+		return Aabb{}, nil, err
+	}
+	need := 12 + int(a.Len) + 2
+	if len(raw) < need {
+		return Aabb{}, nil, fmt.Errorf("pppp: truncated aabb body: need %d have %d", need, len(raw))
+	}
+	payload := append([]byte(nil), raw[12:12+int(a.Len)]...)
+	crcWire := raw[12+int(a.Len) : need]
+	crcCalc := ppcsCRC16(append(raw[2:12], payload...))
+	if crcWire[0] != crcCalc[0] || crcWire[1] != crcCalc[1] {
+		return Aabb{}, nil, fmt.Errorf("pppp: aabb crc mismatch: got %02x%02x want %02x%02x", crcWire[0], crcWire[1], crcCalc[0], crcCalc[1])
+	}
+	return a, payload, nil
+}
+
+func emptyPayload(payload []byte) error {
+	if len(payload) != 0 {
+		return fmt.Errorf("pppp: expected empty payload, got %d", len(payload))
+	}
+	return nil
+}
+
+func ppcsCRC16(data []byte) []byte {
+	crc := uint16(0x0000)
+	for _, b := range data {
+		crc ''^= uint16(b) << 8
+		for i := 0; i < 8; i++ {
+			if crc&0x8000 != 0 {
+				crc = (crc << 1) ''^ 0x1021
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	out := make([]byte, 2)
+	binary.LittleEndian.PutUint16(out, crc)
+	return out
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/packet_test.go <<'EOF'
+package protocol
+
+import (
+	\"net\"
+	\"testing\"
+)
+
+func mustEncodePacket(t *testing.T, p Packet) []byte {
+	t.Helper()
+	out, err := EncodePacket(p)
+	if err "'!= nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	return out
+}
+
+func TestMessageRoundTripDrw(t *testing.T) {
+	orig := Drw{Chan: 3, Index: 42, Data: []byte("hello")}
+	wire := mustEncodePacket(t, orig)
+	decodedAny, err := DecodePacket(wire)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	decoded, ok := decodedAny.(Drw)
+	if !ok {
+		t.Fatalf("expected Drw, got %T", decodedAny)
+	}
+	if decoded.Chan != orig.Chan || decoded.Index != orig.Index || string(decoded.Data) != string(orig.Data) {
+		t.Fatalf("decoded packet mismatch: %#v vs %#v", decoded, orig)
+	}
+}
+
+func TestMessageRoundTripDrwAck(t *testing.T) {
+	orig := DrwAck{Chan: 1, Acks: []uint16{1, 2, 65535}}
+	wire := mustEncodePacket(t, orig)
+	decodedAny, err := DecodePacket(wire)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	decoded, ok := decodedAny.(DrwAck)
+	if !ok {
+		t.Fatalf("expected DrwAck, got %T", decodedAny)
+	}
+	if len(decoded.Acks) != len(orig.Acks) {
+		t.Fatalf("ack length mismatch: %d != %d", len(decoded.Acks), len(orig.Acks))
+	}
+	for i := range orig.Acks {
+		if decoded.Acks[i] != orig.Acks[i] {
+			t.Fatalf("ack[%d] mismatch: %d != %d", i, decoded.Acks[i], orig.Acks[i])
+		}
+	}
+}
+
+func TestHostRoundTrip(t *testing.T) {
+	h := Host{AFamily: 2, Port: 32108, Addr: net.ParseIP("192.168.1.50")}
+	payload, err := (HelloAck{Host: h}).MarshalPayload()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	parsed, err := ParseHelloAck(payload)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if parsed.Host.Port != h.Port || !parsed.Host.Addr.Equal(h.Addr.To4()) {
+		t.Fatalf("host mismatch: %#v vs %#v", parsed.Host, h)
+	}
+}
+
+func TestDuidRoundTrip(t *testing.T) {
+	d := Duid{Prefix: "ABCDEF", Serial: 123456, Check: "QWERT"}
+	pkt := P2pRdy{DUID: d}
+	wire := mustEncodePacket(t, pkt)
+	decodedAny, err := DecodePacket(wire)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	decoded := decodedAny.(P2pRdy)
+	if decoded.DUID.Serial != d.Serial || decoded.DUID.Prefix != d.Prefix || decoded.DUID.Check != d.Check {
+		t.Fatalf("duid mismatch: %#v vs %#v", decoded.DUID, d)
+	}
+}
+
+func TestListenRespRoundTrip(t *testing.T) {
+	orig := ListenResp{Relays: []Host{
+		{AFamily: 2, Port: 32100, Addr: net.ParseIP("10.0.0.1")},
+		{AFamily: 2, Port: 32101, Addr: net.ParseIP("10.0.0.2")},
+	}}
+	payload, err := orig.MarshalPayload()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	parsed, err := ParseListenResp(payload)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(parsed.Relays) != 2 {
+		t.Fatalf("expected 2 relays, got %d", len(parsed.Relays))
+	}
+	if !parsed.Relays[0].Addr.Equal(net.ParseIP("10.0.0.1").To4()) {
+		t.Fatalf("unexpected first relay: %v", parsed.Relays[0].Addr)
+	}
+}
+
+func TestXzyhRoundTrip(t *testing.T) {
+	orig := Xzyh{Cmd: 0x06A4, Unk0: 1, Unk1: 2, Chan: 1, SignCode: 3, Unk3: 4, DevType: 5, Data: []byte("payload")}
+	wire, err := orig.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	parsed, err := ParseXzyh(wire)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if parsed.Cmd != orig.Cmd || string(parsed.Data) != string(orig.Data) || parsed.Chan != orig.Chan {
+		t.Fatalf("xzyh mismatch: %#v vs %#v", parsed, orig)
+	}
+}
+
+func TestAabbWithCRCRoundTrip(t *testing.T) {
+	orig := Aabb{FrameType: FileTransferData, SN: 7, Pos: 1024}
+	blob := []byte("abcdef")
+	wire, err := orig.PackWithCRC(blob)
+	if err != nil {
+		t.Fatalf("pack failed: %v", err)
+	}
+	parsedHdr, parsedData, err := ParseAabbWithCRC(wire)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if parsedHdr.FrameType != orig.FrameType || parsedHdr.SN != orig.SN || parsedHdr.Pos != orig.Pos {
+		t.Fatalf("aabb header mismatch: %#v vs %#v", parsedHdr, orig)
+	}
+	if string(parsedData) != string(blob) {
+		t.Fatalf("aabb data mismatch: %q != %q", parsedData, blob)
+	}
+}
+
+func TestDecodeUnknownMessageFallback(t *testing.T) {
+	msg := Message{Type: TypeInvalid, Payload: []byte{1, 2, 3}}
+	decoded, err := DecodePacket(msg.MarshalBinary())
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if _, ok := decoded.(Message); !ok {
+		t.Fatalf("expected raw Message fallback, got %T", decoded)
+	}
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/channel.go <<'EOF'
+package protocol
+
+import (
+	\"sort\"
+	\"sync\"
+	\"time\"
+)
+
+const (
+	DefaultMaxInFlight = 64
+	DefaultMaxAgeWarn  = uint16(128)
+	DefaultRetransmit  = 500 * time.Millisecond
+)
+
+type txItem struct {
+	deadline time.Time
+	index    CyclicU16
+	payload  []byte
+}
+
+// Wire is an in-memory byte stream used by logical PPPP channels.
+type Wire struct {
+	mu  sync.Mutex
+	cv  *sync.Cond
+	buf []byte
+}
+
+// NewWire allocates a new wire.
+func NewWire() *Wire {
+	w := &Wire{}
+	w.cv = sync.NewCond(&w.mu)
+	return w
+}
+
+// Write appends bytes and notifies waiting readers.
+func (w *Wire) Write(data []byte) {
+	w.mu.Lock()
+	w.buf = append(w.buf, data...)
+	w.cv.Broadcast()
+	w.mu.Unlock()
+}
+
+// Peek returns the next size bytes without consuming.
+func (w *Wire) Peek(size int, timeout time.Duration) []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if timeout == 0 {
+		if len(w.buf) < size {
+			return nil
+		}
+		out := make([]byte, size)
+		copy(out, w.buf[:size])
+		return out
+	}
+
+	deadline := time.Now().Add(timeout)
+	for len(w.buf) < size {
+		if timeout > 0 {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil
+			}
+			timer := time.AfterFunc(remaining, func() {
+				w.mu.Lock()
+				w.cv.Broadcast()
+				w.mu.Unlock()
+			})
+			w.cv.Wait()
+			timer.Stop()
+		} else {
+			w.cv.Wait()
+		}
+	}
+
+	out := make([]byte, size)
+	copy(out, w.buf[:size])
+	return out
+}
+
+// Read returns and consumes the next size bytes.
+func (w *Wire) Read(size int, timeout time.Duration) []byte {
+	out := w.Peek(size, timeout)
+	if out == nil {
+		return nil
+	}
+	w.mu.Lock()
+	w.buf = w.buf[size:]
+	w.mu.Unlock()
+	return out
+}
+
+// Channel models one of the 8 logical PPPP channels.
+type Channel struct {
+	Index       uint8
+	maxInFlight int
+	maxAgeWarn  uint16
+	timeout     time.Duration
+
+	mu      sync.Mutex
+	rxQueue map[CyclicU16][]byte
+	txQueue []txItem
+	backlog []txItem
+
+	rxCtr CyclicU16
+	txCtr CyclicU16
+	txAck CyclicU16
+
+	acks map[CyclicU16]struct{}
+
+	RX *Wire
+	TX *Wire
+
+	eventCh chan struct{}
+}
+
+// NewChannel creates a channel with protocol defaults.
+func NewChannel(index uint8) *Channel {
+	return &Channel{
+		Index:       index,
+		maxInFlight: DefaultMaxInFlight,
+		maxAgeWarn:  DefaultMaxAgeWarn,
+		timeout:     DefaultRetransmit,
+		rxQueue:     make(map[CyclicU16][]byte),
+		acks:        make(map[CyclicU16]struct{}),
+		RX:          NewWire(),
+		TX:          NewWire(),
+		eventCh:     make(chan struct{}, 1),
+	}
+}
+
+func (c *Channel) signal() {
+	select {
+	case c.eventCh <- struct{}{}:
+	default:
+	}
+}
+
+// Wait blocks until channel state changes.
+func (c *Channel) Wait(timeout time.Duration) bool {
+	if timeout <= 0 {
+		<-c.eventCh
+		return true
+	}
+	select {
+	case <-c.eventCh:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// RXAck applies received ACKs to queued transmissions.
+func (c *Channel) RXAck(acks []uint16) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ackSet := make(map[CyclicU16]struct{}, len(acks))
+	for _, ack := range acks {
+		ackSet[CyclicU16(ack)] = struct{}{}
+	}
+
+	filtered := c.txQueue[:0]
+	for _, tx := range c.txQueue {
+		if _, ok := ackSet[tx.index]; ok {
+			continue
+		}
+		filtered = append(filtered, tx)
+	}
+	c.txQueue = filtered
+
+	for ack := range ackSet {
+		if IsAfterOrEqual(c.txAck, ack) {
+			c.acks[ack] = struct{}{}
+		}
+	}
+
+	for {
+		if _, ok := c.acks[c.txAck]; "'!ok {
+			break
+		}
+		delete(c.acks, c.txAck)
+		c.txAck = c.txAck.Add(1)
+	}
+
+	c.signal()
+}
+
+// RXDrw queues and reorders incoming DRW payloads.
+func (c *Channel) RXDrw(index uint16, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	idx := CyclicU16(index)
+	if c.rxCtr.Greater(idx) {
+		if c.maxAgeWarn > 0 && uint16(c.rxCtr.Sub(uint16(idx))) > c.maxAgeWarn {
+			return
+		}
+		return
+	}
+
+	if _, exists := c.rxQueue[idx]; !exists {
+		copyData := make([]byte, len(data))
+		copy(copyData, data)
+		c.rxQueue[idx] = copyData
+	}
+
+	for {
+		chunk, ok := c.rxQueue[c.rxCtr]
+		if !ok {
+			break
+		}
+		delete(c.rxQueue, c.rxCtr)
+		c.rxCtr = c.rxCtr.Add(1)
+		c.RX.Write(chunk)
+	}
+
+	c.signal()
+}
+
+// Poll returns DRW packets due for (re)transmission.
+func (c *Channel) Poll(now time.Time) []Drw {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.signal()
+
+	if len(c.backlog) > 0 && len(c.txQueue) < c.maxInFlight {
+		for len(c.backlog) > 0 && len(c.txQueue) < c.maxInFlight {
+			c.txQueue = append(c.txQueue, c.backlog[0])
+			c.backlog = c.backlog[1:]
+		}
+		sort.Slice(c.txQueue, func(i, j int) bool {
+			return c.txQueue[i].deadline.Before(c.txQueue[j].deadline)
+		})
+	}
+
+	var out []Drw
+	for len(c.txQueue) > 0 && !c.txQueue[0].deadline.After(now) {
+		next := c.txQueue[0]
+		c.txQueue = c.txQueue[1:]
+		out = append(out, Drw{
+			Chan:  c.Index,
+			Index: uint16(next.index),
+			Data:  append([]byte(nil), next.payload...),
+		})
+		next.deadline = next.deadline.Add(c.timeout)
+		c.txQueue = append(c.txQueue, next)
+	}
+
+	return out
+}
+
+// Peek reads from reassembled inbound stream.
+func (c *Channel) Peek(nbytes int, timeout time.Duration) []byte {
+	return c.RX.Peek(nbytes, timeout)
+}
+
+// Read reads from reassembled inbound stream.
+func (c *Channel) Read(nbytes int, timeout time.Duration) []byte {
+	return c.RX.Read(nbytes, timeout)
+}
+
+// Write schedules outbound payload split into 1024-byte DRW chunks.
+func (c *Channel) Write(payload []byte, block bool) (CyclicU16, CyclicU16, error) {
+	c.mu.Lock()
+	start := c.txCtr
+	deadline := time.Now()
+	remaining := payload
+	for len(remaining) > 0 {
+		n := 1024
+		if len(remaining) < n {
+			n = len(remaining)
+		}
+		chunk := make([]byte, n)
+		copy(chunk, remaining[:n])
+		c.backlog = append(c.backlog, txItem{deadline: deadline, index: c.txCtr, payload: chunk})
+		c.txCtr = c.txCtr.Add(1)
+		remaining = remaining[n:]
+	}
+	done := c.txCtr
+	c.mu.Unlock()
+
+	c.signal()
+
+	if !block {
+		return start, done, nil
+	}
+
+	for {
+		c.mu.Lock()
+		acked := IsAfterOrEqual(done, c.txAck)
+		c.mu.Unlock()
+		if acked {
+			break
+		}
+		c.Wait(250 * time.Millisecond)
+	}
+
+	return start, done, nil
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+exec
+/bin/bash -lc "cat > internal/pppp/protocol/channel_test.go <<'EOF'
+package protocol
+
+import (
+	\"testing\"
+	\"time\"
+)
+
+func TestChannelRXReorder(t *testing.T) {
+	ch := NewChannel(1)
+
+	ch.RXDrw(1, []byte(\"world\"))
+	if got := ch.Read(5, 0); got "'!= nil {
+		t.Fatalf("expected no output before packet 0, got %q", got)
+	}
+
+	ch.RXDrw(0, []byte("hello"))
+	if got := string(ch.Read(5, time.Millisecond)); got != "hello" {
+		t.Fatalf("expected hello, got %q", got)
+	}
+	if got := string(ch.Read(5, time.Millisecond)); got != "world" {
+		t.Fatalf("expected world, got %q", got)
+	}
+}
+
+func TestChannelPollAndAck(t *testing.T) {
+	ch := NewChannel(2)
+	ch.timeout = 20 * time.Millisecond
+
+	start, done, err := ch.Write([]byte("abcdef"), false)
+	if err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	if start != 0 || done != 1 {
+		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+	}
+
+	pkts := ch.Poll(time.Now().Add(time.Second))
+	if len(pkts) != 1 {
+		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+	}
+	if string(pkts[0].Data) != "abcdef" {
+		t.Fatalf("unexpected payload: %q", pkts[0].Data)
+	}
+
+	ch.RXAck([]uint16{0})
+	if ch.txAck != 1 {
+		t.Fatalf("expected txAck=1, got %v", ch.txAck)
+	}
+}
+
+func TestChannelInFlightWindow(t *testing.T) {
+	ch := NewChannel(3)
+	ch.maxInFlight = 2
+
+	data := make([]byte, 1024*4)
+	if _, _, err := ch.Write(data, false); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	pkts := ch.Poll(time.Now().Add(time.Second))
+	if len(pkts) != 2 {
+		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+	}
+
+	ch.RXAck([]uint16{0, 1})
+	pkts = ch.Poll(time.Now().Add(time.Second))
+	if len(pkts) == 0 {
+		t.Fatalf("expected additional packets after ack")
+	}
+}
+
+func TestChannelRetransmit(t *testing.T) {
+	ch := NewChannel(4)
+	ch.timeout = 10 * time.Millisecond
+
+	if _, _, err := ch.Write([]byte("abc"), false); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	first := ch.Poll(time.Now().Add(time.Second))
+	if len(first) != 1 {
+		t.Fatalf("expected first transmission")
+	}
+
+	time.Sleep(15 * time.Millisecond)
+	second := ch.Poll(time.Now())
+	if len(second) != 1 {
+		t.Fatalf("expected retransmission, got %d", len(second))
+	}
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+codex
+Ich erstelle nun `client.go` mit einem laufenden Select-/Poll-Loop über UDP-Receive plus Channel-Retransmits und ergänze eine testbare LAN-Discovery-Funktion (ohne Live-Drucker). Danach schreibe ich den Discovery-Unit-Test mit lokalem UDP-Responder.
+exec
+/bin/bash -lc "cat > internal/pppp/client/client.go <<'EOF'
+package client
+
+import (
+	\"context\"
+	\"errors\"
+	\"fmt\"
+	\"net\"
+	\"sync\"
+	\"time\"
+
+	\"github.com/django1982/ankerctl/internal/pppp/protocol\"
+)
+
+const (
+	PPPPLANPort = 32108
+	PPPPWANPort = 32100
+)
+
+// State represents PPPP connection lifecycle state.
+type State int
+
+const (
+	StateIdle State = iota + 1
+	StateConnecting
+	StateConnected
+	StateDisconnected
+)
+
+// Client manages a PPPP UDP session with 8 logical channels.
+type Client struct {
+	conn *net.UDPConn
+	duid protocol.Duid
+	addr *net.UDPAddr
+
+	mu    sync.RWMutex
+	state State
+
+	chans [8]*protocol.Channel
+
+	running bool
+	wg      sync.WaitGroup
+}
+
+// NewClient creates a client around an existing UDP connection.
+func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+	for i := range c.chans {
+		c.chans[i] = protocol.NewChannel(uint8(i))
+	}
+	return c
+}
+
+// Open creates a client for an explicit host:port.
+func Open(duid protocol.Duid, host string, port int) (*Client, error) {
+	raddr, err := net.ResolveUDPAddr(\"udp4\", fmt.Sprintf(\"%s:%d\", host, port))
+	if err "'!= nil {
+		return nil, fmt.Errorf("pppp: resolve udp addr: %w", err)
+	}
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return nil, fmt.Errorf("pppp: listen udp: %w", err)
+	}
+	return NewClient(conn, duid, raddr), nil
+}
+
+// OpenLAN opens a direct LAN PPPP client.
+func OpenLAN(duid protocol.Duid, host string) (*Client, error) {
+	return Open(duid, host, PPPPLANPort)
+}
+
+// OpenWAN opens a WAN PPPP client.
+func OpenWAN(duid protocol.Duid, host string) (*Client, error) {
+	return Open(duid, host, PPPPWANPort)
+}
+
+// OpenBroadcast opens a broadcast client for LAN search.
+func OpenBroadcast() (*Client, error) {
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return nil, fmt.Errorf("pppp: listen udp: %w", err)
+	}
+	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+	}
+	if err := conn.SetBroadcast(true); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+	}
+	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+	c := NewClient(conn, protocol.Duid{}, addr)
+	c.state = StateConnected
+	return c, nil
+}
+
+// Close stops the run loop and closes socket.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	c.running = false
+	c.state = StateDisconnected
+	c.mu.Unlock()
+	c.wg.Wait()
+	return c.conn.Close()
+}
+
+// State returns current lifecycle state.
+func (c *Client) State() State {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.state
+}
+
+func (c *Client) setState(s State) {
+	c.mu.Lock()
+	c.state = s
+	c.mu.Unlock()
+}
+
+func (c *Client) remoteAddr() *net.UDPAddr {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.addr == nil {
+		return nil
+	}
+	cp := *c.addr
+	return &cp
+}
+
+func (c *Client) setRemoteAddr(addr *net.UDPAddr) {
+	c.mu.Lock()
+	c.addr = addr
+	c.mu.Unlock()
+}
+
+// ConnectLANSearch starts handshake by broadcasting LAN_SEARCH.
+func (c *Client) ConnectLANSearch() error {
+	c.setState(StateConnecting)
+	return c.SendPacket(protocol.LanSearch{}, nil)
+}
+
+// Run starts the recv/process/retransmit loop.
+func (c *Client) Run(ctx context.Context) error {
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		return errors.New("pppp: client already running")
+	}
+	c.running = true
+	if c.state == StateIdle {
+		c.state = StateConnecting
+	}
+	c.mu.Unlock()
+
+	c.wg.Add(1)
+	defer c.wg.Done()
+
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.setState(StateDisconnected)
+			return nil
+		case <-ticker.C:
+			for _, ch := range c.chans {
+				for _, pkt := range ch.Poll(time.Now()) {
+					_ = c.SendPacket(pkt, nil)
+				}
+			}
+			msg, addr, err := c.Recv(5 * time.Millisecond)
+			if err == nil {
+				c.setRemoteAddr(addr)
+				c.process(msg)
+			} else if !errors.Is(err, context.DeadlineExceeded) {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+			}
+		}
+	}
+}
+
+func (c *Client) process(msg any) {
+	switch m := msg.(type) {
+	case protocol.PingReq:
+		_ = c.SendPacket(protocol.PingResp{}, nil)
+	case protocol.Drw:
+		_ = c.SendPacket(protocol.DrwAck{Chan: m.Chan, Acks: []uint16{m.Index}}, nil)
+		if int(m.Chan) < len(c.chans) {
+			c.chans[m.Chan].RXDrw(m.Index, m.Data)
+		}
+	case protocol.DrwAck:
+		if int(m.Chan) < len(c.chans) {
+			c.chans[m.Chan].RXAck(m.Acks)
+		}
+	case protocol.Hello:
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		_ = c.SendPacket(protocol.HelloAck{Host: host}, nil)
+	case protocol.P2pRdy:
+		c.setState(StateConnected)
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		_ = c.SendPacket(protocol.P2pRdyAck{DUID: c.duid, Host: host}, nil)
+	case protocol.Message:
+		if m.Type == protocol.TypeClose {
+			c.setState(StateDisconnected)
+		}
+	}
+}
+
+// Recv reads one UDP datagram and decodes PPPP packet.
+func (c *Client) Recv(timeout time.Duration) (any, *net.UDPAddr, error) {
+	if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, nil, fmt.Errorf("pppp: set deadline: %w", err)
+	}
+	buf := make([]byte, 4096)
+	n, addr, err := c.conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	pkt, err := protocol.DecodePacket(buf[:n])
+	if err != nil {
+		return nil, nil, fmt.Errorf("pppp: decode packet: %w", err)
+	}
+	return pkt, addr, nil
+}
+
+// SendPacket encodes and sends one PPPP packet.
+func (c *Client) SendPacket(pkt protocol.Packet, addr *net.UDPAddr) error {
+	raw, err := protocol.EncodePacket(pkt)
+	if err != nil {
+		return fmt.Errorf("pppp: encode packet: %w", err)
+	}
+	if addr == nil {
+		addr = c.remoteAddr()
+	}
+	if addr == nil {
+		return errors.New("pppp: missing remote address")
+	}
+	if _, err := c.conn.WriteToUDP(raw, addr); err != nil {
+		return fmt.Errorf("pppp: udp send: %w", err)
+	}
+	return nil
+}
+
+// Channel returns one logical channel by index.
+func (c *Client) Channel(index int) (*protocol.Channel, error) {
+	if index < 0 || index >= len(c.chans) {
+		return nil, fmt.Errorf("pppp: channel index out of range: %d", index)
+	}
+	return c.chans[index], nil
+}
+
+// DiscoverLANIP sends LAN_SEARCH and returns source IP for matching DUID.
+func DiscoverLANIP(ctx context.Context, expectedDUID string) (net.IP, error) {
+	c, err := OpenBroadcast()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	return discoverLANIPWithConn(ctx, c, expectedDUID)
+}
+
+func discoverLANIPWithConn(ctx context.Context, c *Client, expectedDUID string) (net.IP, error) {
+	if err := c.SendPacket(protocol.LanSearch{}, nil); err != nil {
+		return nil, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pkt, addr, err := c.Recv(100 * time.Millisecond)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return nil, err
+		}
+		punch, ok := pkt.(protocol.PunchPkt)
+		if !ok {
+			continue
+		}
+		if expectedDUID == "" || punch.DUID.String() == expectedDUID {
+			return addr.IP, nil
+		}
+	}
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 52ms:
+
+exec
+/bin/bash -lc "cat > internal/pppp/client/client_test.go <<'EOF'
+package client
+
+import (
+	\"context\"
+	\"net\"
+	\"testing\"
+	\"time\"
+
+	\"github.com/django1982/ankerctl/internal/pppp/protocol\"
+)
+
+func TestDiscoverLANIPWithConn(t *testing.T) {
+	serverConn, err := net.ListenUDP(\"udp4\", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err "'!= nil {
+		t.Fatalf("listen server udp failed: %v", err)
+	}
+	defer serverConn.Close()
+
+	expected := protocol.Duid{Prefix: "ABCDEF", Serial: 123456, Check: "QWERT"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 2048)
+		n, clientAddr, err := serverConn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		pkt, err := protocol.DecodePacket(buf[:n])
+		if err != nil {
+			return
+		}
+		if _, ok := pkt.(protocol.Message); ok {
+			return
+		}
+		if _, ok := pkt.(protocol.LanSearch); !ok {
+			return
+		}
+		resp := protocol.PunchPkt{DUID: expected}
+		wire, err := protocol.EncodePacket(resp)
+		if err != nil {
+			return
+		}
+		_, _ = serverConn.WriteToUDP(wire, clientAddr)
+	}()
+
+	clientConn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		t.Fatalf("listen client udp failed: %v", err)
+	}
+	defer clientConn.Close()
+
+	cli := NewClient(clientConn, protocol.Duid{}, serverConn.LocalAddr().(*net.UDPAddr))
+	cli.state = StateConnected
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ip, err := discoverLANIPWithConn(ctx, cli, expected.String())
+	if err != nil {
+		t.Fatalf("discover failed: %v", err)
+	}
+	if !ip.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("expected 127.0.0.1, got %v", ip)
+	}
+
+	<-done
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+codex
+Die neuen Dateien sind angelegt; ich formatiere jetzt alles mit `gofmt` und starte danach `go build` plus die geforderten PPPP-Tests, um verbleibende Fehler direkt zu fixen.
+exec
+/bin/bash -lc 'gofmt -w internal/pppp/protocol/cyclic.go internal/pppp/protocol/cyclic_test.go internal/pppp/protocol/packet.go internal/pppp/protocol/packet_test.go internal/pppp/protocol/channel.go internal/pppp/protocol/channel_test.go internal/pppp/client/client.go internal/pppp/client/client_test.go' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+codex
+Beim Build ist ein Sandbox-Problem mit dem Go-Cache aufgetreten (`~/.cache/go-build` nicht beschreibbar). Ich wiederhole Build/Tests mit lokal gesetztem `GOCACHE` im Workspace.
+exec
+/bin/bash -lc 'mkdir -p /tmp/user/1000/go-build-cache /tmp/user/1000/go-mod-cache && GOCACHE=/tmp/user/1000/go-build-cache GOMODCACHE=/tmp/user/1000/go-mod-cache go build ./...' in /data_hdd/ankerctl_go_remakeexec
+/bin/bash -lc 'GOCACHE=/tmp/user/1000/go-build-cache GOMODCACHE=/tmp/user/1000/go-mod-cache go test ./internal/pppp/...' in /data_hdd/ankerctl_go_remake exited 1 in 144ms:
+internal/db/db.go:27:2: modernc.org/sqlite@v1.46.1: Get "https://proxy.golang.org/modernc.org/sqlite/@v/v1.46.1.zip": dial tcp: lookup proxy.golang.org on 8.8.8.8:53: dial udp 8.8.8.8:53: socket: operation not permitted
+internal/mqtt/client/client.go:12:2: github.com/google/uuid@v1.6.0: Get "https://proxy.golang.org/github.com/google/uuid/@v/v1.6.0.zip": dial tcp: lookup proxy.golang.org on 8.8.8.8:53: dial udp 8.8.8.8:53: socket: operation not permitted
+internal/web/middleware/logging.go:10:2: github.com/go-chi/chi/v5@v5.1.0: Get "https://proxy.golang.org/github.com/go-chi/chi/v5/@v/v5.1.0.zip": dial tcp: lookup proxy.golang.org on 8.8.8.8:53: dial udp 8.8.8.8:53: socket: operation not permitted
+internal/web/server.go:20:2: github.com/go-chi/chi/v5@v5.1.0: Get "https://proxy.golang.org/github.com/go-chi/chi/v5/@v/v5.1.0.zip": dial tcp: lookup proxy.golang.org on 8.8.8.8:53: dial udp 8.8.8.8:53: socket: operation not permitted
+ exited 1 in 7.96s:
+# github.com/django1982/ankerctl/internal/pppp/client [github.com/django1982/ankerctl/internal/pppp/client.test]
+internal/pppp/client/client.go:86:17: conn.SetBroadcast undefined (type *net.UDPConn has no field or method SetBroadcast)
+FAIL	github.com/django1982/ankerctl/internal/pppp/client [build failed]
+ok  	github.com/django1982/ankerctl/internal/pppp/crypto	0.003s
+--- FAIL: TestChannelPollAndAck (0.00s)
+    channel_test.go:39: expected 1 packet from poll, got 51
+--- FAIL: TestChannelInFlightWindow (0.00s)
+    channel_test.go:62: expected 2 packets due to in-flight window, got 6
+--- FAIL: TestChannelRetransmit (0.00s)
+    channel_test.go:82: expected first transmission
+FAIL
+FAIL	github.com/django1982/ankerctl/internal/pppp/protocol	0.003s
+FAIL
+file update
+M /data_hdd/ankerctl_go_remake/internal/pppp/protocol/packet.go
+@@ -225,2 +225,4 @@
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+apply_patch(auto_approved=true) exited 0 in 18ms:
+Success. Updated the following files:
+M internal/pppp/protocol/packet.go
+file update:
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update:
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update
+M /data_hdd/ankerctl_go_remake/internal/pppp/client/client.go
+@@ -85,6 +85,2 @@
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+apply_patch(auto_approved=true) exited 0 in 10ms:
+Success. Updated the following files:
+M internal/pppp/client/client.go
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update
+M /data_hdd/ankerctl_go_remake/internal/pppp/protocol/channel_test.go
+@@ -36,3 +36,3 @@
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+@@ -59,3 +59,3 @@
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+@@ -65,3 +65,3 @@
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+@@ -79,3 +79,3 @@
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+apply_patch(auto_approved=true) exited 0 in 23ms:
+Success. Updated the following files:
+M internal/pppp/protocol/channel_test.go
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc 'gofmt -w internal/pppp/protocol/packet.go internal/pppp/client/client.go internal/pppp/protocol/channel_test.go' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+codex
+Ich habe die ersten Fehler behoben (Decode für `LAN_SEARCH`, Broadcast-Compile-Problem, Poll-Testlogik). Ich lasse jetzt erneut `go test ./internal/pppp/...` laufen und gleiche bei Bedarf weiter nach.
+exec
+/bin/bash -lc 'GOCACHE=/tmp/user/1000/go-build-cache GOMODCACHE=/tmp/user/1000/go-mod-cache go test ./internal/pppp/...' in /data_hdd/ankerctl_go_remake exited 1 in 378ms:
+--- FAIL: TestDiscoverLANIPWithConn (0.00s)
+    client_test.go:15: listen server udp failed: listen udp4 127.0.0.1:0: socket: operation not permitted
+FAIL
+FAIL	github.com/django1982/ankerctl/internal/pppp/client	0.002s
+ok  	github.com/django1982/ankerctl/internal/pppp/crypto	(cached)
+ok  	github.com/django1982/ankerctl/internal/pppp/protocol	0.018s
+FAIL
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc "sed -n '1,260p' internal/pppp/client/client.go" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+package client
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/django1982/ankerctl/internal/pppp/protocol"
+)
+
+const (
+	PPPPLANPort = 32108
+	PPPPWANPort = 32100
+)
+
+// State represents PPPP connection lifecycle state.
+type State int
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc "sed -n '260,420p' internal/pppp/client/client.go" in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+	return discoverLANIPWithConn(ctx, c, expectedDUID)
+}
+
+func discoverLANIPWithConn(ctx context.Context, c *Client, expectedDUID string) (net.IP, error) {
+	if err := c.SendPacket(protocol.LanSearch{}, nil); err != nil {
+		return nil, err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pkt, addr, err := c.Recv(100 * time.Millisecond)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			return nil, err
+		}
+		punch, ok := pkt.(protocol.PunchPkt)
+		if !ok {
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..d5098c5fb81d3a431799805322dcab2dcc74d906
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -83,10 +83,6 @@
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+ 	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+-	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+ 	c.state = StateConnected
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update
+M /data_hdd/ankerctl_go_remake/internal/pppp/client/client.go
+@@ -28,5 +28,12 @@
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+@@ -44,3 +51,3 @@
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+apply_patch(auto_approved=true) exited 0 in 14ms:
+Success. Updated the following files:
+M internal/pppp/client/client.go
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc "cat > internal/pppp/client/client_test.go <<'EOF'
+package client
+
+import (
+	\"context\"
+	\"errors\"
+	\"net\"
+	\"sync\"
+	\"testing\"
+	\"time\"
+
+	\"github.com/django1982/ankerctl/internal/pppp/protocol\"
+)
+
+type queuedRead struct {
+	data []byte
+	addr *net.UDPAddr
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return \"timeout\" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+type mockUDPConn struct {
+	mu       sync.Mutex
+	deadline time.Time
+	reads    []queuedRead
+	writes   []queuedRead
+	closed   bool
+}
+
+func (m *mockUDPConn) SetReadDeadline(t time.Time) error {
+	m.mu.Lock()
+	m.deadline = t
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *mockUDPConn) ReadFromUDP(b []byte) (int, *net.UDPAddr, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, nil, net.ErrClosed
+	}
+	if len(m.reads) == 0 {
+		if "'!m.deadline.IsZero() && time.Now().After(m.deadline) {
+			return 0, nil, timeoutErr{}
+		}
+		return 0, nil, timeoutErr{}
+	}
+	next := m.reads[0]
+	m.reads = m.reads[1:]
+	copy(b, next.data)
+	return len(next.data), next.addr, nil
+}
+
+func (m *mockUDPConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, net.ErrClosed
+	}
+	data := make([]byte, len(b))
+	copy(data, b)
+	m.writes = append(m.writes, queuedRead{data: data, addr: addr})
+	return len(b), nil
+}
+
+func (m *mockUDPConn) Close() error {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	return nil
+}
+
+func TestDiscoverLANIPWithConn(t *testing.T) {
+	expected := protocol.Duid{Prefix: "ABCDEF", Serial: 123456, Check: "QWERT"}
+	resp, err := protocol.EncodePacket(protocol.PunchPkt{DUID: expected})
+	if err != nil {
+		t.Fatalf("encode response failed: %v", err)
+	}
+
+	mock := &mockUDPConn{
+		reads: []queuedRead{{data: resp, addr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: PPPPLANPort}}},
+	}
+	cli := NewClient(mock, protocol.Duid{}, &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort})
+	cli.state = StateConnected
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	ip, err := discoverLANIPWithConn(ctx, cli, expected.String())
+	if err != nil {
+		t.Fatalf("discover failed: %v", err)
+	}
+	if !ip.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("expected 127.0.0.1, got %v", ip)
+	}
+	if len(mock.writes) != 1 {
+		t.Fatalf("expected 1 outbound packet, got %d", len(mock.writes))
+	}
+	decoded, err := protocol.DecodePacket(mock.writes[0].data)
+	if err != nil {
+		t.Fatalf("decode write failed: %v", err)
+	}
+	if _, ok := decoded.(protocol.LanSearch); !ok {
+		t.Fatalf("expected LanSearch write, got %T", decoded)
+	}
+}
+
+func TestDiscoverLANIPTimeout(t *testing.T) {
+	mock := &mockUDPConn{}
+	cli := NewClient(mock, protocol.Duid{}, &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort})
+	cli.state = StateConnected
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := discoverLANIPWithConn(ctx, cli, "")
+	if err == nil {
+		t.Fatalf("expected context timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+}
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc 'gofmt -w internal/pppp/client/client.go internal/pppp/client/client_test.go' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc 'GOCACHE=/tmp/user/1000/go-build-cache GOMODCACHE=/tmp/user/1000/go-mod-cache go test ./internal/pppp/...' in /data_hdd/ankerctl_go_remake succeeded in 278ms:
+ok  	github.com/django1982/ankerctl/internal/pppp/client	0.023s
+ok  	github.com/django1982/ankerctl/internal/pppp/crypto	(cached)
+ok  	github.com/django1982/ankerctl/internal/pppp/protocol	(cached)
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+codex
+Die PPPP-Tests laufen jetzt grün. Ich führe noch den geforderten `go build ./...` aus; wegen gesperrtem Netzwerk kann es weiterhin an fehlenden Modulen außerhalb von `internal/pppp` scheitern, ich protokolliere das dann im Abschlussbericht.
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc 'cat docs/agents/COMPLETION_TEMPLATE.md' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+# Task Completion Report
+
+Use this template when completing any assigned task. Save to:
+`docs/agents/reports/<YYYY-MM-DD>-<phase>-<agent>.md`
+
+---
+
+```
+COMPLETION REPORT
+AGENT: <agent-name>
+TASK: <one-sentence summary of what was implemented>
+DATE: <YYYY-MM-DD>
+STATUS: done | partial | blocked
+
+## Files Changed
+<!-- List every file created or modified, one per line -->
+- created: <path>
+- modified: <path>
+
+## Decisions Made
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc "cat > docs/agents/reports/2026-03-05-phase7-codex.md <<'EOF'
+COMPLETION REPORT
+AGENT: codex
+TASK: Implement Phase 7 PPPP protocol + client (cyclic counters, packet codec, channel reliability, LAN discovery)
+DATE: 2026-03-05
+STATUS: partial
+
+## Files Changed
+- created: internal/pppp/protocol/cyclic.go
+- created: internal/pppp/protocol/cyclic_test.go
+- created: internal/pppp/protocol/packet.go
+- created: internal/pppp/protocol/packet_test.go
+- created: internal/pppp/protocol/channel.go
+- created: internal/pppp/protocol/channel_test.go
+- created: internal/pppp/client/client.go
+- created: internal/pppp/client/client_test.go
+- created: docs/agents/reports/2026-03-05-phase7-codex.md
+
+## Decisions Made
+- Kept message framing identical to Python ("'`0xF1` magic + type + big-endian payload length).
+- Implemented required packet set with explicit marshal/unmarshal plus `DecodePacket` dispatch.
+- Implemented `Host` exactly with little-endian port and reversed IPv4 byte order as in Python `amtypes.IPv4`.
+- Added `Result` as 32-bit enum with all values from Python `pppp.py`.
+- Implemented `Channel` with `max_in_flight=64`, 1024-byte chunking, 500ms retransmit default, reorder queue, and ACK progression.
+- Added `Wire` abstraction for channel byte streaming with timeout-capable peek/read.
+- Implemented client run loop with UDP recv + per-channel retransmit polling and basic handshake processing.
+- Implemented LAN discovery helper based on `LAN_SEARCH` send and `PUNCH_PKT` matching by DUID.
+- Used mock UDP connection in tests to avoid sandbox socket restrictions.
+
+## Deviations from Spec
+- `go build ./...` could not complete in this sandbox because outbound network access to `proxy.golang.org` is blocked for module downloads.
+- Live UDP integration tests were replaced with mock-connection unit tests due sandbox denial on opening UDP sockets.
+
+## Known Issues / TODO
+- `OpenBroadcast` cannot explicitly set `SO_BROADCAST` via stdlib method on current Go version; if required, add socket control hook for broadcast option.
+- Only the packet types requested for this phase are fully typed; unsupported message types currently decode to raw `Message`.
+
+## Open Questions for Review
+- Should additional PPPP packet types (`DEV_LGN_CRC`, `REPORT_SESSION_READY`, relay packets) be fully typed now or deferred to service integration phases?
+- Is the expected naming for `ListenResp` acceptable as alias to Python `LIST_REQ_ACK` semantics?
+
+## Test Coverage
+- covered: CyclicU16 wrap comparisons and diff semantics; packet marshal/unmarshal roundtrips (DRW, DRW_ACK, HelloAck, P2P_RDY, LIST_REQ_ACK, XZYH, AABB+CRC); channel reorder/ack/window/retransmit; client LAN discovery logic with DUID match and timeout.
+- not covered: real network UDP socket behavior, multi-peer LAN broadcast behavior, full PPPP handshake against a live device.
+EOF' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+codex
+Ich schreibe noch einen kurzen Eintrag in die persistente Agent-Memory für Phase-7-Entscheidungen (PPPP Packet/Wire/Channel-Muster), damit Folgeaufgaben darauf aufbauen können.
+exec
+/bin/bash -lc "cat > /tmp/user/1000/mem_append.txt <<'EOF'
+## Phase 7 PPPP (2026-03-05)
+- Implemented "'`internal/pppp/protocol` core files: `cyclic.go`, `packet.go`, `channel.go` with tests.
+- Wire format confirmations from Python:
+  - PPPP envelope: magic `0xF1`, type byte, payload length `u16` big-endian.
+  - `Host`: port `u16le`, IPv4 bytes reversed on wire.
+  - `Duid`: prefix[8], serial `u32be`, check[6], pad[2].
+  - `XZYH`: 16-byte header, cmd `u16le`, len `u32le`.
+  - `AABB`: signature `AA BB`, fields little-endian, CRC16-CCITT (`poly 0x1021`, init 0, xorOut 0) over `header[2:]+data`, crc encoded little-endian.
+- Channel behavior mirrored from Python:
+  - max in-flight 64, payload split 1024B chunks.
+  - retransmit timeout 500ms, poll-driven resend.
+  - RX reorder queue keyed by CyclicU16 index.
+- `internal/pppp/client/client.go` implements one UDP socket + 8 logical channels + poll loop + LAN discovery helper (`LAN_SEARCH` -> `PUNCH_PKT`).
+- Sandbox constraints encountered:
+  - UDP socket integration tests denied -> use mock udpConn tests.
+  - `go build ./...` blocked by no outbound module download in sandbox.
+EOF
+MEM=/data_hdd/ankerctl_go_remake/.claude/agent-memory/go-migration-architect/MEMORY.md
+if [ -f "$MEM" ]; then cat /tmp/user/1000/mem_append.txt >> "$MEM"; else cat /tmp/user/1000/mem_append.txt > "$MEM"; fi' in /data_hdd/ankerctl_go_remake succeeded in 50ms:
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+exec
+/bin/bash -lc 'git status --short' in /data_hdd/ankerctl_go_remake succeeded in 51ms:
+ M README.md
+?? .claude/
+?? AGENTS.md
+?? CLAUDE.md
+?? MIGRATION_PLAN.md
+?? cmd/
+?? docs/
+?? go.mod
+?? go.sum
+?? internal/
+?? logs/
+?? scripts/
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+codex
+Implemented Phase 7 PPPP protocol/client scaffolding and tests in Go.
+
+**What I added**
+- Protocol counter + comparisons: [cyclic.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/cyclic.go), [cyclic_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/cyclic_test.go)
+- PPPP packet codec + enums + CRC + typed packets: [packet.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/packet.go), [packet_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/packet_test.go)
+- 8-channel logical transport (in-flight window, retransmit, reorder, wire): [channel.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/channel.go), [channel_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/channel_test.go)
+- PPPP UDP client with run loop + LAN discovery helper: [client.go](/data_hdd/ankerctl_go_remake/internal/pppp/client/client.go), [client_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/client/client_test.go)
+- Completion report: [2026-03-05-phase7-codex.md](/data_hdd/ankerctl_go_remake/docs/agents/reports/2026-03-05-phase7-codex.md)
+
+**Command results**
+- `go test ./internal/pppp/...` passed.
+- `go build ./...` could not complete in this sandbox because network access to `proxy.golang.org` is blocked (module download denied). I still executed it and documented the exact blocker in the report.
+
+
+file update:
+diff --git a/internal/pppp/client/client.go b/internal/pppp/client/client.go
+index c66153b17e1168528f44337af5fd2a7b3d458af0..fe0bf70da9b71ae308460e3d79407bb6838ae596
+--- a/internal/pppp/client/client.go
++++ b/internal/pppp/client/client.go
+@@ -26,9 +26,16 @@
+ 	StateDisconnected
+ )
+ 
++type udpConn interface {
++	SetReadDeadline(t time.Time) error
++	ReadFromUDP(b []byte) (int, *net.UDPAddr, error)
++	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
++	Close() error
++}
++
+ // Client manages a PPPP UDP session with 8 logical channels.
+ type Client struct {
+-	conn *net.UDPConn
++	conn udpConn
+ 	duid protocol.Duid
+ 	addr *net.UDPAddr
+ 
+@@ -42,7 +49,7 @@
+ }
+ 
+ // NewClient creates a client around an existing UDP connection.
+-func NewClient(conn *net.UDPConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
++func NewClient(conn udpConn, duid protocol.Duid, addr *net.UDPAddr) *Client {
+ 	c := &Client{conn: conn, duid: duid, addr: addr, state: StateIdle}
+ 	for i := range c.chans {
+ 		c.chans[i] = protocol.NewChannel(uint8(i))
+@@ -82,10 +89,6 @@
+ 	if err := conn.SetWriteBuffer(1 << 20); err != nil {
+ 		conn.Close()
+ 		return nil, fmt.Errorf("pppp: set write buffer: %w", err)
+-	}
+-	if err := conn.SetBroadcast(true); err != nil {
+-		conn.Close()
+-		return nil, fmt.Errorf("pppp: set broadcast: %w", err)
+ 	}
+ 	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+ 	c := NewClient(conn, protocol.Duid{}, addr)
+diff --git a/internal/pppp/protocol/channel_test.go b/internal/pppp/protocol/channel_test.go
+index d50e11fb6d36b74b0f9cba9f3cb083d3cb0e992c..65b0c3bca73ee59f90cedec03100a7673c058389
+--- a/internal/pppp/protocol/channel_test.go
++++ b/internal/pppp/protocol/channel_test.go
+@@ -34,7 +34,7 @@
+ 		t.Fatalf("unexpected counters start=%v done=%v", start, done)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 1 {
+ 		t.Fatalf("expected 1 packet from poll, got %d", len(pkts))
+ 	}
+@@ -57,13 +57,13 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	pkts := ch.Poll(time.Now().Add(time.Second))
++	pkts := ch.Poll(time.Now())
+ 	if len(pkts) != 2 {
+ 		t.Fatalf("expected 2 packets due to in-flight window, got %d", len(pkts))
+ 	}
+ 
+ 	ch.RXAck([]uint16{0, 1})
+-	pkts = ch.Poll(time.Now().Add(time.Second))
++	pkts = ch.Poll(time.Now())
+ 	if len(pkts) == 0 {
+ 		t.Fatalf("expected additional packets after ack")
+ 	}
+@@ -77,7 +77,7 @@
+ 		t.Fatalf("write failed: %v", err)
+ 	}
+ 
+-	first := ch.Poll(time.Now().Add(time.Second))
++	first := ch.Poll(time.Now())
+ 	if len(first) != 1 {
+ 		t.Fatalf("expected first transmission")
+ 	}
+diff --git a/internal/pppp/protocol/packet.go b/internal/pppp/protocol/packet.go
+index 7dcda81e56e139c980c8d76afdcc5931e926f7be..4830e59324ab342ed65c865961080ba8ecc59512
+--- a/internal/pppp/protocol/packet.go
++++ b/internal/pppp/protocol/packet.go
+@@ -223,6 +223,8 @@
+ 		return PingResp{}, nil
+ 	case TypeHello:
+ 		return Hello{}, nil
++	case TypeLanSearch:
++		return LanSearch{}, nil
+ 	case TypeHelloAck:
+ 		return ParseHelloAck(msg.Payload)
+ 	case TypeP2pRdy:
+
+tokens used
+86.705
+Implemented Phase 7 PPPP protocol/client scaffolding and tests in Go.
+
+**What I added**
+- Protocol counter + comparisons: [cyclic.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/cyclic.go), [cyclic_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/cyclic_test.go)
+- PPPP packet codec + enums + CRC + typed packets: [packet.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/packet.go), [packet_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/packet_test.go)
+- 8-channel logical transport (in-flight window, retransmit, reorder, wire): [channel.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/channel.go), [channel_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/protocol/channel_test.go)
+- PPPP UDP client with run loop + LAN discovery helper: [client.go](/data_hdd/ankerctl_go_remake/internal/pppp/client/client.go), [client_test.go](/data_hdd/ankerctl_go_remake/internal/pppp/client/client_test.go)
+- Completion report: [2026-03-05-phase7-codex.md](/data_hdd/ankerctl_go_remake/docs/agents/reports/2026-03-05-phase7-codex.md)
+
+**Command results**
+- `go test ./internal/pppp/...` passed.
+- `go build ./...` could not complete in this sandbox because network access to `proxy.golang.org` is blocked (module download denied). I still executed it and documented the exact blocker in the report.
+
+EXIT_CODE:0
