@@ -14,6 +14,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/logging"
 	mqttclient "github.com/django1982/ankerctl/internal/mqtt/client"
 	"github.com/django1982/ankerctl/internal/mqtt/protocol"
 )
