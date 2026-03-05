@@ -7,9 +7,36 @@ import (
 )
 
 // Root serves the web UI placeholder.
-func (h *Handler) Root(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte("<!doctype html><html><body><h1>ankerctl</h1></body></html>"))
+func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := h.loadConfig()
+	printer, activeIdx, locked := h.activePrinter(cfg)
+
+	data := TemplateData{
+		ActivePrinterIndex: activeIdx,
+		PrinterIndexLocked: locked,
+		Configure:          cfg != nil && cfg.IsConfigured(),
+		DebugMode:          h.devMode,
+		VideoSupported:     true, // Default to true, can be refined based on model
+	}
+
+	if cfg != nil {
+		data.Printers = cfg.Printers
+		data.Printer = printer
+		data.UploadRateMbps = cfg.UploadRateMbps
+		if cfg.Account != nil {
+			data.ConfigExistingEmail = cfg.Account.Email
+			data.CurrentCountry = cfg.Account.Country
+		}
+	}
+
+	if h.cfg != nil {
+		data.LoginFilePath = h.cfg.ConfigDir()
+	}
+
+	if err := h.render(w, "index.html", data); err != nil {
+		h.log.Error("render root", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "rendering failed")
+	}
 }
 
 // Health is a lightweight liveness endpoint.

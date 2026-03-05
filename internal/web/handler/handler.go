@@ -16,6 +16,44 @@ import (
 	"github.com/django1982/ankerctl/internal/service"
 )
 
+// TemplateData holds the common variables for rendering the web UI.
+type TemplateData struct {
+	Printers            []model.Printer
+	ActivePrinterIndex  int
+	Printer             *model.Printer
+	PrinterIndexLocked  bool
+	VideoSupported      bool
+	Configure           bool
+	DebugMode           bool
+	Flashes             []Flash
+	VideoProfiles       []VideoProfile
+	VideoProfileDefault string
+
+	// Setup specific
+	ConfigExistingEmail string
+	CountryCodes        string
+	CurrentCountry      string
+	LoginFilePath       string
+	AnkerConfig         string
+	UploadRateChoices   []int
+	UploadRateMbps      int
+	UploadRateEnv       bool
+}
+
+type Flash struct {
+	Category string
+	Message  string
+}
+
+type VideoProfile struct {
+	ID    string
+	Label string
+	Live  bool
+}
+
+// RenderFunc is the function signature for template rendering.
+type RenderFunc func(w http.ResponseWriter, name string, data any) error
+
 // Handler bundles shared dependencies used by HTTP handlers.
 type Handler struct {
 	cfg     *config.Manager
@@ -23,14 +61,15 @@ type Handler struct {
 	svc     *service.ServiceManager
 	log     *slog.Logger
 	devMode bool
+	render  RenderFunc
 }
 
 // New creates a handler bundle.
-func New(cfg *config.Manager, database *db.DB, svc *service.ServiceManager, log *slog.Logger, devMode bool) *Handler {
+func New(cfg *config.Manager, database *db.DB, svc *service.ServiceManager, log *slog.Logger, devMode bool, render RenderFunc) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{cfg: cfg, db: database, svc: svc, log: log, devMode: devMode}
+	return &Handler{cfg: cfg, db: database, svc: svc, log: log, devMode: devMode, render: render}
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload any) {

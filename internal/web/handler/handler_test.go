@@ -26,7 +26,11 @@ func newTestHandler(t *testing.T) *Handler {
 		t.Fatalf("db.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return New(cfgMgr, database, nil, nil, false)
+
+	mockRender := func(w http.ResponseWriter, name string, data any) error {
+		return nil
+	}
+	return New(cfgMgr, database, nil, nil, false, mockRender)
 }
 
 func TestGeneralEndpoints(t *testing.T) {

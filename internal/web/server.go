@@ -45,6 +45,7 @@ type Server struct {
 	logger     *slog.Logger
 
 	sessionManager *mw.SessionManager
+	templates      *Templates
 
 	mu sync.RWMutex
 
@@ -295,6 +296,12 @@ func (s *Server) initialize() error {
 		return err
 	}
 	s.sessionManager = mw.NewSessionManager(secret)
+
+	tmpls, err := newTemplates()
+	if err != nil {
+		return fmt.Errorf("init templates: %w", err)
+	}
+	s.templates = tmpls
 
 	return nil
 }

@@ -1,0 +1,81 @@
+{{define "title"}}
+ankerctl{{if .Printer}} - {{.Printer.Name}}{{end}}
+{{end}}
+
+{{define "contents"}}
+{{if .Configure}}
+{{template "tabs/home.html" .}}
+{{template "tabs/gcode.html" .}}
+{{template "tabs/history.html" .}}
+{{template "tabs/filaments.html" .}}
+{{if .VideoSupported}}
+{{template "tabs/timelapse.html" .}}
+{{end}}
+{{template "tabs/instructions.html" .}}
+{{end}}
+
+{{template "tabs/setup.html" .}}
+
+{{if .DebugMode}}
+{{template "tabs/debug.html" .}}
+{{end}}
+{{end}}
+
+{{define "menu"}}
+{{if .Configure}}
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link{{if .Configure}} active{{end}}"
+            id="home-tab" data-bs-toggle="pill" data-bs-target="#home" type="button" role="tab">
+            <i class="bi-house px-1"></i>Home
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link"
+            id="gcode-tab" data-bs-toggle="pill" data-bs-target="#gcode" type="button" role="tab">
+            <i class="bi-terminal px-1"></i>GCode
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link"
+            id="history-tab" data-bs-toggle="pill" data-bs-target="#history" type="button" role="tab">
+            <i class="bi-clock-history px-1"></i>History
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link"
+            id="filaments-tab" data-bs-toggle="pill" data-bs-target="#filaments" type="button" role="tab">
+            <i class="bi-droplet-fill px-1"></i>Filaments
+        </button>
+    </li>
+    {{if .VideoSupported}}
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link"
+            id="timelapse-tab" data-bs-toggle="pill" data-bs-target="#timelapse" type="button" role="tab">
+            <i class="bi-camera-reels px-1"></i>Timelapse
+        </button>
+    </li>
+    {{end}}
+    <li class="nav-item" role="presentation">
+        <button class="btn btn-outline-primary nav-link"
+            id="instructions-tab" data-bs-toggle="pill" data-bs-target="#instructions" type="button" role="tab">
+            <i class="bi-list-check px-1"></i>Instructions
+        </button>
+    </li>
+{{end}}
+
+<li class="nav-item" role="presentation">
+    <button class="btn btn-outline-primary nav-link{{if not .Configure}} active{{end}}"
+        id="setup-tab" data-bs-toggle="pill" data-bs-target="#setup" type="button" role="tab">
+    <i class="bi-gear-fill px-1"></i>Setup
+    </button>
+</li>
+
+{{if .DebugMode}}
+<li class="nav-item" role="presentation">
+    <button class="btn btn-outline-primary nav-link"
+        id="debug-tab" data-bs-toggle="pill" data-bs-target="#debug" type="button" role="tab">
+    <i class="bi-bug-fill px-1"></i>Debug
+    </button>
+</li>
+{{end}}
+{{end}}

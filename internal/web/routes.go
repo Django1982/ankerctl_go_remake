@@ -1,13 +1,23 @@
 package web
 
 import (
+	"net/http"
+
 	"github.com/django1982/ankerctl/internal/web/handler"
 	"github.com/django1982/ankerctl/internal/web/ws"
 )
 
 func (s *Server) registerRoutes() {
 	r := s.router
-	h := handler.New(s.config, s.database, s.services, s.logger, s.devMode)
+
+	rf := func(w http.ResponseWriter, name string, data any) error {
+		return s.templates.Render(w, name, data)
+	}
+
+	h := handler.New(s.config, s.database, s.services, s.logger, s.devMode, rf)
+
+	// Static files
+	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))
 
 	// Page routes
 	r.Get("/", h.Root)

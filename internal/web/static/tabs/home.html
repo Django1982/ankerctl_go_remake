@@ -1,0 +1,387 @@
+<div class="tab-pane fade{{if .Configure}} show active{{end}}" id="home" role="tabpanel"
+    aria-labelledby="home-tab">
+    <div class="container">
+        <div class="row g-3">
+            <div class="col-md-12 col-lg-6 col-xl-8">
+                {{if .VideoSupported}}
+                <!-- Video Container -->
+                <div id="vplayer" style="display: none;">
+                    <video class="w-100 d-block rounded-3 bg-body-tertiary" playsinline autoplay muted id="player"
+                        poster="/static/img/load-screen.svg">
+                    </video>
+                </div>
+                <div id="video-toggle-container" class="text-center mb-3">
+                    <button class="btn btn-primary" id="video-toggle">
+                        <i class="bi-camera-video px-1"></i> Enable Video
+                    </button>
+                </div>
+
+                <!-- Printer Control Card -->
+                <div class="card mb-3">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span class="fs-6">Printer Control</span>
+                        <div>
+                            <button class="btn btn-sm btn-outline-danger" id="control-home-all" title="Home All">
+                                <i class="bi-house-fill px-1"></i> Home All
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <!-- XY Control -->
+                            <div class="col-md-6 text-center">
+                                <div class="fw-bold mb-3 small text-muted">XY Axis (Bed / Extruder)</div>
+                                <div class="d-inline-block position-relative" style="width: 160px; height: 160px;">
+                                    <!-- Y+ (Bed Back) -->
+                                    <button
+                                        class="btn btn-secondary position-absolute top-0 start-50 translate-middle-x"
+                                        id="move-y-plus" style="width: 50px; height: 45px;" title="Bed Back">
+                                        <i class="bi-chevron-up"></i>
+                                    </button>
+                                    <!-- Y- (Bed Front) -->
+                                    <button
+                                        class="btn btn-secondary position-absolute bottom-0 start-50 translate-middle-x"
+                                        id="move-y-minus" style="width: 50px; height: 45px;" title="Bed Front">
+                                        <i class="bi-chevron-down"></i>
+                                    </button>
+                                    <!-- X- (Extruder Left) -->
+                                    <button
+                                        class="btn btn-secondary position-absolute top-50 start-0 translate-middle-y"
+                                        id="move-x-minus" style="width: 50px; height: 45px;" title="Extruder Left">
+                                        <i class="bi-chevron-left"></i>
+                                    </button>
+                                    <!-- X+ (Extruder Right) -->
+                                    <button class="btn btn-secondary position-absolute top-50 end-0 translate-middle-y"
+                                        id="move-x-plus" style="width: 50px; height: 45px;" title="Extruder Right">
+                                        <i class="bi-chevron-right"></i>
+                                    </button>
+                                    <!-- Home XY -->
+                                    <button class="btn btn-primary position-absolute top-50 start-50 translate-middle"
+                                        id="control-home-xy" style="width: 50px; height: 45px;" title="Home XY">
+                                        <i class="bi-house"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- Z Control -->
+                            <div class="col-md-6 text-center">
+                                <div class="fw-bold mb-3 small text-muted">Z Axis (Height)</div>
+                                <div class="d-inline-flex flex-column gap-2 align-items-center justify-content-center"
+                                    style="height: 160px;">
+                                    <!-- Z+ (Extruder Up) -->
+                                    <button class="btn btn-secondary" id="move-z-plus"
+                                        style="width: 60px; height: 50px;" title="Extruder Up">
+                                        <i class="bi-chevron-double-up"></i>
+                                    </button>
+                                    <!-- Home Z -->
+                                    <button class="btn btn-primary" id="control-home-z"
+                                        style="width: 60px; height: 45px;" title="Home Z">
+                                        <i class="bi-house"></i>
+                                    </button>
+                                    <!-- Z- (Extruder Down) -->
+                                    <button class="btn btn-secondary" id="move-z-minus"
+                                        style="width: 60px; height: 50px;" title="Extruder Down">
+                                        <i class="bi-chevron-double-down"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Step Distance Selector -->
+                        <div class="row mt-4">
+                            <div class="col-12">
+                                <div class="btn-group w-100" role="group" aria-label="Step Distance">
+                                    <input type="radio" class="btn-check" name="step-dist" id="step-1" value="1"
+                                        checked>
+                                    <label class="btn btn-outline-primary" for="step-1">1mm</label>
+                                    <input type="radio" class="btn-check" name="step-dist" id="step-10" value="10">
+                                    <label class="btn btn-outline-primary" for="step-10">10mm</label>
+                                    <input type="radio" class="btn-check" name="step-dist" id="step-20" value="20">
+                                    <label class="btn btn-outline-primary" for="step-20">20mm</label>
+                                    <input type="radio" class="btn-check" name="step-dist" id="step-50" value="50">
+                                    <label class="btn btn-outline-primary" for="step-50">50mm</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {{else}}
+                <div class="card">
+                    <div class="card-body text-center">
+                        <p class="display-1">
+                            <i class="bi-camera-video-off"></i>
+                        </p>
+                        <p class="display-6">Camera not available</p>
+                    </div>
+                </div>
+                {{end}}
+                <!-- Temperature Graph -->
+                <div class="card mt-3">
+                    <div class="card-header fs-6 d-flex justify-content-between align-items-center"
+                        data-bs-toggle="collapse" data-bs-target="#temp-graph-section" role="button"
+                        aria-expanded="true" aria-controls="temp-graph-section">
+                        <i class="bi-thermometer-half px-1"></i> Temperature Graph
+                        <i class="bi-chevron-down"></i>
+                    </div>
+                    <div class="collapse show" id="temp-graph-section">
+                        <div class="card-body">
+                            <div class="btn-group btn-group-sm mb-2 w-100" role="group" aria-label="Time window">
+                                <button type="button" class="btn btn-outline-secondary temp-window active"
+                                    data-window="300">5m</button>
+                                <button type="button" class="btn btn-outline-secondary temp-window"
+                                    data-window="900">15m</button>
+                                <button type="button" class="btn btn-outline-secondary temp-window"
+                                    data-window="1800">30m</button>
+                                <button type="button" class="btn btn-outline-secondary temp-window"
+                                    data-window="3600">1h</button>
+                            </div>
+                            <div style="position: relative; height: 300px; width: 100%;">
+                                <canvas id="temp-chart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-12 col-lg-6 col-xl-4">
+                <div class="card">
+                    {{if .Printer}}
+                    <div class="card-header">
+                        Connection
+                    </div>
+                    <div class="card-body fw-bold">
+                        <div>
+                            {{.Printer.Name}} ({{.Printer.SN}})
+                        </div>
+                        <span id="badge-mqtt" class="badge">MQTT</span>
+                        <span id="badge-pppp" class="badge text-bg-secondary">PPPP</span>
+                        {{if .VideoSupported}}
+                        <span id="badge-video" class="badge">VIDEO</span>
+                        {{end}}
+                        <span id="badge-ctrl" class="badge">CTRL</span>
+                    </div>
+                    {{end}}
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span class="fs-6">Upload Progress</span>
+                        <button class="btn btn-sm btn-outline-secondary collapse-toggle" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#upload-progress-section" aria-expanded="true"
+                            aria-controls="upload-progress-section">
+                            <i class="bi-chevron-down"></i>
+                        </button>
+                    </div>
+                    <div class="collapse show" id="upload-progress-section">
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <div class="progress position-relative" id="uploadProgress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated fs-6"
+                                            role="progressbar" id="upload-progressbar" title="Upload Progress"
+                                            aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%">
+                                            <span id="upload-progress" class="position-absolute w-100 fw-bold">
+                                                0%
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div class="form-text mt-2" id="upload-progress-meta">Idle</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{if .VideoSupported}}
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span class="fs-6">Video Controls</span>
+                        <button class="btn btn-sm btn-outline-secondary collapse-toggle" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#video-controls-section" aria-expanded="true"
+                            aria-controls="video-controls-section">
+                            <i class="bi-chevron-down"></i>
+                        </button>
+                    </div>
+                    <div class="collapse show" id="video-controls-section">
+                        <div class="card-body">
+                            <div class="row g-3 mb-3">
+                                <div class="col-4">
+                                    <button class="w-100 btn btn-secondary" id="light-on" aria-pressed="false">
+                                        <i class="bi-lightbulb px-1"></i>Light on
+                                    </button>
+                                </div>
+                                <div class="col-4">
+                                    <button class="w-100 btn btn-secondary" id="light-off" aria-pressed="false">
+                                        <i class="bi-lightbulb-off px-1"></i>Light off
+                                    </button>
+                                </div>
+                                <div class="col-4">
+                                    <button class="w-100 btn btn-secondary" id="snapshot-btn" title="Download Snapshot">
+                                        <i class="bi-camera px-1"></i>Snapshot
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <label class="form-label">Live View Quality</label>
+                                    <div class="row g-3">
+                                        {{range .VideoProfiles}}
+                                        {{if .Live}}
+                                        <div class="col-6">
+                                            <button type="button"
+                                                class="w-100 btn btn-secondary video-profile-btn{{if eq $.VideoProfileDefault .ID}} active{{end}}"
+                                                data-video-profile="{{.ID}}"
+                                                aria-pressed="{{if eq $.VideoProfileDefault .ID}}true{{else}}false{{end}}">
+                                                {{.Label}}
+                                            </button>
+                                        </div>
+                                        {{end}}
+                                        {{end}}
+                                    </div>
+                                    <div class="form-text" id="video-resolution">Current: -</div>
+                                    <div class="form-text">Live view supports SD/HD; snapshots can be higher.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {{end}}
+                    <div class="card-header fs-6">Print Progress</div>
+                    <div class="card-body">
+                        <div class="row mb-3 g-3" id="print-controls">
+                            <div class="col-12">
+                                <div class="input-group">
+                                    <div class="input-group-text print-info-label" id="printName">Name</div>
+                                    <span id="print-name" class="form-control" title="Print Name"
+                                        aria-describedby="printName">
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-2 g-2">
+                            <div class="col-6">
+                                <div class="input-group input-group-sm">
+                                    <div class="input-group-text d-none d-sm-block">
+                                        <i class="icon icon-hotend"></i>
+                                    </div>
+                                    <span id="nozzle-temp" class="form-control text-center bg-body-tertiary px-1"
+                                        title="Current Nozzle">
+                                        0°C
+                                    </span>
+                                    <input type="number" id="set-nozzle-temp" class="form-control text-center px-1"
+                                        value="0" min="0" max="{{if and .Printer (contains .Printer.Model "M5C")}}300{{else}}260{{end}}" />
+                                    <span class="input-group-text">°C</span>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="input-group input-group-sm">
+                                    <div class="input-group-text d-none d-sm-block">
+                                        <i class="icon icon-bed"></i>
+                                    </div>
+                                    <span id="bed-temp" class="form-control text-center bg-body-tertiary px-1"
+                                        title="Current Bed">
+                                        0°C
+                                    </span>
+                                    <input type="number" id="set-bed-temp" class="form-control text-center px-1"
+                                        value="0" min="0" max="100" />
+                                    <span class="input-group-text">°C</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-3 g-2 justify-content-center">
+                            <div class="col-auto">
+                                <button type="button" class="btn btn-sm btn-outline-info preheat-preset"
+                                    data-nozzle="200" data-bed="60">PLA</button>
+                            </div>
+                            <div class="col-auto">
+                                <button type="button" class="btn btn-sm btn-outline-info preheat-preset"
+                                    data-nozzle="240" data-bed="80">PETG</button>
+                            </div>
+                            <div class="col-auto">
+                                <button type="button" class="btn btn-sm btn-outline-info preheat-preset"
+                                    data-nozzle="250" data-bed="100">ABS</button>
+                            </div>
+                            <div class="col-auto">
+                                <button type="button" class="btn btn-sm btn-outline-info preheat-preset"
+                                    data-nozzle="230" data-bed="50">TPU</button>
+                            </div>
+                            <div class="col-auto">
+                                <button type="button" class="btn btn-sm btn-outline-danger preheat-preset"
+                                    data-nozzle="0" data-bed="0">Cooldown</button>
+                            </div>
+                        </div>
+                        <div class="row mb-3 g-3">
+                            <div class="col-6">
+                                <div class="input-group">
+                                    <div class="input-group-text print-info-label" id="timeElapsed">
+                                        <i class="icon icon-time-passed"></i>
+                                    </div>
+                                    <span id="time-elapsed" class="form-control text-center" title="Time Elapsed"
+                                        aria-describedby="timeElapsed">
+                                        00:00:00
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="input-group">
+                                    <div class="input-group-text print-info-label" id="timeRemain">
+                                        <i class="icon icon-time-remaining"></i>
+                                    </div>
+                                    <span id="time-remain" class="form-control text-center" title="Time Remaining"
+                                        aria-describedby="timeRemain">
+                                        00:00:00
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-3 g-3">
+                            <div class="col-12">
+                                <div class="progress position-relative" id="printProgress">
+                                    <div class="progress-bar progress-bar-striped progress-bar-animated fs-5"
+                                        role="progressbar" id="progressbar" title="Progress Bar" aria-valuenow="0"
+                                        aria-valuemin="0" aria-valuemax="100" style="width: 0%">
+                                        <span id="progress" class="position-absolute w-100 fw-bold">
+                                            0%
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-3 g-3" id="print-controls-btns">
+                            <div class="col-12 text-center">
+                                <div class="btn-group" role="group">
+                                    <button type="button" class="btn btn-warning d-none" id="print-pause" title="Pause Print">
+                                        <i class="bi-pause-fill px-1"></i> Pause
+                                    </button>
+                                    <button type="button" class="btn btn-success d-none" id="print-resume"
+                                        title="Resume Print">
+                                        <i class="bi-play-fill px-1"></i> Resume
+                                    </button>
+                                    <button type="button" class="btn btn-danger d-none" id="print-stop" title="Stop Print">
+                                        <i class="bi-stop-fill px-1"></i> Stop
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <div class="input-group">
+                                    <div class="input-group-text print-info-label" id="printLayer">
+                                        <i class="bi-layers-half px-1"></i>
+                                    </div>
+                                    <span id="print-layer" class="form-control text-center" title="Print Layers"
+                                        aria-describedby="printLayer">
+                                        0/0
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="input-group">
+                                    <div class="input-group-text print-info-label" id="printSpeed">
+                                        <i class="bi-speedometer px-1"></i>
+                                    </div>
+                                    <span id="print-speed" class="form-control text-center small" title="Print Speed"
+                                        aria-describedby="printSpeed">
+                                        0mm/s
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+    </div>
+</div>
