@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -106,6 +107,147 @@ func TestDiscoverLANIPWithConn(t *testing.T) {
 	}
 	if _, ok := decoded.(protocol.LanSearch); !ok {
 		t.Fatalf("expected LanSearch write, got %T", decoded)
+	}
+}
+
+// TestLANHandshakePunchPkt verifies the full LAN handshake sequence:
+// 1. Client sends LanSearch
+// 2. Printer responds with PunchPkt
+// 3. Client sends Close + P2pRdy (while Connecting)
+// 4. Printer responds with P2pRdy
+// 5. Client sends P2pRdyAck and transitions to Connected
+//
+// This mirrors Python ppppapi.py process() behavior exactly.
+func TestLANHandshakePunchPkt(t *testing.T) {
+	duid := protocol.Duid{Prefix: "EUPRAKM", Serial: 100001, Check: "ABCDE"}
+	printerDuid := protocol.Duid{Prefix: "EUPRAKM", Serial: 100001, Check: "ABCDE"}
+	printerAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: PPPPLANPort}
+
+	// Build the printer's PunchPkt response (step 2).
+	punchPktRaw, err := protocol.EncodePacket(protocol.PunchPkt{DUID: printerDuid})
+	if err != nil {
+		t.Fatalf("encode PunchPkt: %v", err)
+	}
+
+	// Build the printer's P2pRdy response (step 4).
+	p2pRdyRaw, err := protocol.EncodePacket(protocol.P2pRdy{DUID: printerDuid})
+	if err != nil {
+		t.Fatalf("encode P2pRdy: %v", err)
+	}
+
+	mock := &mockUDPConn{
+		reads: []queuedRead{
+			{data: punchPktRaw, addr: printerAddr},
+			{data: p2pRdyRaw, addr: printerAddr},
+		},
+	}
+
+	cli := NewClient(mock, duid, printerAddr)
+
+	// Start LAN handshake — sets state to Connecting.
+	if err := cli.ConnectLANSearch(); err != nil {
+		t.Fatalf("ConnectLANSearch: %v", err)
+	}
+	if cli.State() != StateConnecting {
+		t.Fatalf("expected StateConnecting after ConnectLANSearch, got %d", cli.State())
+	}
+
+	// Simulate receiving PunchPkt (step 2) — process should send Close + P2pRdy.
+	msg1, _, err := cli.Recv(50 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("recv PunchPkt: %v", err)
+	}
+	cli.process(msg1)
+
+	// State should still be Connecting (not Connected yet).
+	if cli.State() != StateConnecting {
+		t.Fatalf("expected StateConnecting after PunchPkt, got %d", cli.State())
+	}
+
+	// Simulate receiving P2pRdy (step 4) — process should send P2pRdyAck and set Connected.
+	msg2, _, err := cli.Recv(50 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("recv P2pRdy: %v", err)
+	}
+	cli.process(msg2)
+
+	// Now we should be Connected.
+	if cli.State() != StateConnected {
+		t.Fatalf("expected StateConnected after P2pRdy, got %d", cli.State())
+	}
+
+	// Verify outbound packet sequence:
+	// writes[0] = LanSearch (from ConnectLANSearch)
+	// writes[1] = Close (from PunchPkt handler)
+	// writes[2] = P2pRdy (from PunchPkt handler)
+	// writes[3] = P2pRdyAck (from P2pRdy handler)
+	mock.mu.Lock()
+	writes := make([]queuedRead, len(mock.writes))
+	copy(writes, mock.writes)
+	mock.mu.Unlock()
+
+	if len(writes) != 4 {
+		t.Fatalf("expected 4 outbound packets, got %d", len(writes))
+	}
+
+	expectedTypes := []string{"LanSearch", "Close", "P2pRdy", "P2pRdyAck"}
+	for i, w := range writes {
+		decoded, err := protocol.DecodePacket(w.data)
+		if err != nil {
+			t.Fatalf("decode write[%d]: %v", i, err)
+		}
+		var gotType string
+		switch decoded.(type) {
+		case protocol.LanSearch:
+			gotType = "LanSearch"
+		case protocol.Close:
+			gotType = "Close"
+		case protocol.P2pRdy:
+			gotType = "P2pRdy"
+		case protocol.P2pRdyAck:
+			gotType = "P2pRdyAck"
+		default:
+			gotType = fmt.Sprintf("%T", decoded)
+		}
+		if gotType != expectedTypes[i] {
+			t.Errorf("write[%d]: expected %s, got %s", i, expectedTypes[i], gotType)
+		}
+	}
+}
+
+// TestProcessPunchPktIgnoredWhenNotConnecting verifies that PunchPkt is
+// ignored when the client is not in the Connecting state.
+func TestProcessPunchPktIgnoredWhenNotConnecting(t *testing.T) {
+	duid := protocol.Duid{Prefix: "EUPRAKM", Serial: 100001, Check: "ABCDE"}
+	printerAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: PPPPLANPort}
+	mock := &mockUDPConn{}
+	cli := NewClient(mock, duid, printerAddr)
+	cli.state = StateConnected
+
+	cli.process(protocol.PunchPkt{DUID: duid})
+
+	mock.mu.Lock()
+	nWrites := len(mock.writes)
+	mock.mu.Unlock()
+
+	if nWrites != 0 {
+		t.Fatalf("expected 0 writes when Connected, got %d", nWrites)
+	}
+}
+
+// TestProcessCloseTransitionsToDisconnected verifies that a typed Close
+// packet correctly transitions to Disconnected state.
+func TestProcessCloseTransitionsToDisconnected(t *testing.T) {
+	duid := protocol.Duid{Prefix: "EUPRAKM", Serial: 100001, Check: "ABCDE"}
+	printerAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: PPPPLANPort}
+	mock := &mockUDPConn{}
+	cli := NewClient(mock, duid, printerAddr)
+	cli.state = StateConnected
+
+	cli.process(protocol.Close{})
+
+	if cli.State() != StateDisconnected {
+		t.Fatalf("expected StateDisconnected after Close, got %d", cli.State())
 	}
 }
 

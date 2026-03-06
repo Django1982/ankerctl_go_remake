@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
 )
 
@@ -210,8 +211,27 @@ func (c *Client) Run(ctx context.Context) error {
 
 func (c *Client) process(msg any) {
 	switch m := msg.(type) {
+	case protocol.PunchPkt:
+		// LAN handshake step 2: printer responds to LanSearch with PunchPkt.
+		// While connecting, send Close then P2pRdy to advance the handshake.
+		// Python reference: ppppapi.py process() PUNCH_PKT handler.
+		if c.State() == StateConnecting {
+			_ = c.SendPacket(protocol.Close{}, nil)
+			_ = c.SendPacket(protocol.P2pRdy{DUID: c.duid}, nil)
+		}
+	case protocol.P2pRdy:
+		// LAN handshake step 4: printer confirms with P2pRdy.
+		// Send P2pRdyAck and transition to Connected.
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		_ = c.SendPacket(protocol.P2pRdyAck{DUID: c.duid, Host: host}, nil)
+		c.setState(StateConnected)
+	case protocol.Hello:
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		_ = c.SendPacket(protocol.HelloAck{Host: host}, nil)
 	case protocol.PingReq:
 		_ = c.SendPacket(protocol.PingResp{}, nil)
+	case protocol.PingResp:
+		// ALIVE_ACK — no action needed, matches Python.
 	case protocol.Drw:
 		_ = c.SendPacket(protocol.DrwAck{Chan: m.Chan, Acks: []uint16{m.Index}}, nil)
 		if int(m.Chan) < len(c.chans) {
@@ -221,16 +241,17 @@ func (c *Client) process(msg any) {
 		if int(m.Chan) < len(c.chans) {
 			c.chans[m.Chan].RXAck(m.Acks)
 		}
-	case protocol.Hello:
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
-		_ = c.SendPacket(protocol.HelloAck{Host: host}, nil)
-	case protocol.P2pRdy:
-		c.setState(StateConnected)
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
-		_ = c.SendPacket(protocol.P2pRdyAck{DUID: c.duid, Host: host}, nil)
+	case protocol.Close:
+		c.setState(StateDisconnected)
 	case protocol.Message:
-		if m.Type == protocol.TypeClose {
+		// Fallback for unhandled typed packets that decode to raw Message.
+		switch m.Type {
+		case protocol.TypeClose:
 			c.setState(StateDisconnected)
+		case protocol.TypeDevLgnCRC:
+			// Printer device login with CRC — respond with DevLgnAckCrc.
+			// Python reference: ppppapi.py process() DEV_LGN_CRC handler.
+			_ = c.sendDevLgnAckCrc()
 		}
 	}
 }
@@ -266,6 +287,24 @@ func (c *Client) SendPacket(pkt protocol.Packet, addr *net.UDPAddr) error {
 	}
 	if _, err := c.conn.WriteToUDP(raw, addr); err != nil {
 		return fmt.Errorf("pppp: udp send: %w", err)
+	}
+	return nil
+}
+
+// sendDevLgnAckCrc sends a DEV_LGN_ACK_CRC packet (type 0x13).
+// The payload is 4 zero bytes, curse-encrypted.
+// Python reference: pppp.py PktDevLgnAckCrc.
+func (c *Client) sendDevLgnAckCrc() error {
+	payload := ppppcrypto.Curse(make([]byte, 4))
+	raw := protocol.Message{Type: protocol.TypeDevLgnAckCRC, Payload: payload}
+	data := raw.MarshalBinary()
+	addr := c.remoteAddr()
+	if addr == nil {
+		return errors.New("pppp: missing remote address")
+	}
+	_, err := c.conn.WriteToUDP(data, addr)
+	if err != nil {
+		return fmt.Errorf("pppp: udp send dev_lgn_ack_crc: %w", err)
 	}
 	return nil
 }
