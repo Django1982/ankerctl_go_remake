@@ -61,9 +61,10 @@ type Server struct {
 	maxUploadBytes     int64
 	devMode            bool
 
-	hostSet   bool
-	portSet   bool
-	apiKeySet bool
+	hostSet      bool
+	portSet      bool
+	apiKeySet    bool
+	devModeSet   bool
 }
 
 // Option customizes server construction.
@@ -154,6 +155,7 @@ func WithServiceManager(svc *service.ServiceManager) Option {
 func WithDevMode(dev bool) Option {
 	return func(s *Server) {
 		s.devMode = dev
+		s.devModeSet = true
 	}
 }
 
@@ -270,7 +272,9 @@ func (s *Server) initialize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.devMode = envBool("ANKERCTL_DEV_MODE", false)
+	if !s.devModeSet {
+		s.devMode = envBool("ANKERCTL_DEV_MODE", false)
+	}
 	if !s.hostSet {
 		s.host = firstNonEmpty(os.Getenv("ANKERCTL_HOST"), os.Getenv("FLASK_HOST"), DefaultHost)
 	}

@@ -2,7 +2,6 @@ package ws
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -50,15 +49,8 @@ func (h *Handler) Ctrl(w http.ResponseWriter, r *http.Request) {
 	// Goroutine A: sole reader of conn.
 	go func() {
 		defer close(readDone)
-		if !h.authenticateCtrl(conn, out) {
-			cancel()
-			return
-		}
-		// Send initial state messages via write pump (never writing conn directly).
-		select {
-		case out <- map[string]any{"auth": "ok"}:
-		default:
-		}
+		// Send initial state immediately on connect (mirrors Python behaviour).
+		// HTTP-level auth is already enforced by middleware.
 		h.sendCtrlInitialState(out)
 		h.ctrlReadLoop(ctx, conn, out)
 		cancel()
@@ -142,40 +134,6 @@ func (h *Handler) ctrlHandleMsg(conn *websocket.Conn, msg any) (stop bool) {
 	return false
 }
 
-// authenticateCtrl reads the first message from conn and validates the API key.
-// On failure it enqueues a ctrlCloseFrame sentinel via out so that ctrlWritePump
-// (the sole writer) emits the policy-violation close frame. authenticateCtrl
-// never calls any conn.Write* method directly.
-func (h *Handler) authenticateCtrl(conn *websocket.Conn, out chan<- any) bool {
-	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
-	_, payload, err := conn.ReadMessage()
-	if err != nil {
-		return false
-	}
-	var auth struct {
-		APIKey string `json:"api_key"`
-	}
-	if err := json.Unmarshal(payload, &auth); err != nil || strings.TrimSpace(auth.APIKey) == "" {
-		select {
-		case out <- ctrlCloseFrame{code: websocket.ClosePolicyViolation, reason: "missing api_key"}:
-		default:
-		}
-		return false
-	}
-	expected := ""
-	if h.state != nil {
-		expected = h.state.APIKey()
-	}
-	if !secureEqual(auth.APIKey, expected) {
-		select {
-		case out <- ctrlCloseFrame{code: websocket.ClosePolicyViolation, reason: "invalid api_key"}:
-		default:
-		}
-		return false
-	}
-	return true
-}
-
 // sendCtrlInitialState sends the ankerctl handshake and current video profile
 // via the out channel (never directly to conn).
 //
@@ -212,13 +170,6 @@ func (h *Handler) sendCtrlInitialState(out chan<- any) {
 	case out <- map[string]any{"video_profile": profile}:
 	default:
 	}
-}
-
-func secureEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func (h *Handler) ctrlReadLoop(ctx context.Context, conn *websocket.Conn, out chan<- any) {
