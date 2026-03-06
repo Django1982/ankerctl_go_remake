@@ -87,49 +87,29 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int, database
 			return nil, fmt.Errorf("ppppservice: parse p2p duid: %w", err)
 		}
 
-		host := printer.IPAddr
-
-		// If the config has no IP, consult the DB cache before doing a broadcast.
-		if host == "" && database != nil && printer.SN != "" {
+		// Always use broadcast LAN handshake (LanSearch on port 32108).
+		// The printer only responds to broadcast LanSearch, not unicast.
+		// After PunchPkt is received, process() switches the remote addr to
+		// the printer IP on PPPPPort (32100) for the actual PPPP session.
+		// The DUID filter in process() ensures we latch onto the right printer
+		// even when multiple AnkerMake devices are on the network.
+		if knownIP := printer.IPAddr; knownIP != "" {
+			slog.Info("ppppservice: known IP in config (broadcasting for handshake)", "ip", knownIP, "duid", printer.P2PDUID)
+		} else if database != nil && printer.SN != "" {
 			if cachedIP, dbErr := database.GetPrinterIP(printer.SN); dbErr == nil && cachedIP != "" {
-				slog.Info("ppppservice: using cached IP from DB", "ip", cachedIP, "sn", printer.SN)
-				host = cachedIP
+				slog.Info("ppppservice: known cached IP (broadcasting for handshake)", "ip", cachedIP, "sn", printer.SN)
 			}
 		}
 
-		if host == "" {
-			ip, err := ppppclient.DiscoverLANIP(ctx, printer.P2PDUID)
-			if err != nil {
-				return nil, fmt.Errorf("ppppservice: discover printer ip: %w", err)
-			}
-			host = ip.String()
-			slog.Info("ppppservice: discovered printer IP via LAN broadcast", "ip", host)
-
-			// Persist the discovered IP in both config and DB cache so future
-			// restarts and re-logins can skip the broadcast.
-			if saved, saveErr := cfgMgr.Load(); saveErr == nil && saved != nil {
-				if printerIndex < len(saved.Printers) && saved.Printers[printerIndex].IPAddr == "" {
-					saved.Printers[printerIndex].IPAddr = host
-					if saveErr := cfgMgr.Save(saved); saveErr != nil {
-						slog.Warn("ppppservice: could not persist discovered IP to config", "error", saveErr)
-					}
-				}
-			}
-			if database != nil && printer.SN != "" {
-				if dbErr := database.SetPrinterIP(printer.SN, host); dbErr != nil {
-					slog.Warn("ppppservice: could not persist discovered IP to db", "error", dbErr)
-				}
-			}
-		}
-
-		cli, err := ppppclient.OpenLAN(duid, host)
+		cli, err := ppppclient.OpenBroadcastLAN(duid)
 		if err != nil {
-			return nil, fmt.Errorf("ppppservice: open lan client: %w", err)
+			return nil, fmt.Errorf("ppppservice: open broadcast lan client: %w", err)
 		}
 		if err := cli.ConnectLANSearch(); err != nil {
 			_ = cli.Close()
 			return nil, fmt.Errorf("ppppservice: connect lan search: %w", err)
 		}
+		slog.Info("ppppservice: LanSearch broadcast sent, awaiting PunchPkt", "duid", printer.P2PDUID)
 		return cli, nil
 	}
 }

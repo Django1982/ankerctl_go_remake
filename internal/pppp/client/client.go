@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	PPPPLANPort = 32108
-	PPPPWANPort = 32100
+	PPPPLANPort = 32108 // UDP port for LAN discovery (LanSearch broadcast / PunchPkt)
+	PPPPPort    = 32100 // UDP port for PPPP session (file upload, camera, remote control)
+	PPPPWANPort = PPPPPort // kept for compatibility
 )
 
 // State represents PPPP connection lifecycle state.
@@ -72,9 +73,41 @@ func Open(duid protocol.Duid, host string, port int) (*Client, error) {
 	return NewClient(conn, duid, raddr), nil
 }
 
-// OpenLAN opens a direct LAN PPPP client.
+// OpenLAN opens a direct LAN PPPP client on the PPPP session port (32100).
 func OpenLAN(duid protocol.Duid, host string) (*Client, error) {
-	return Open(duid, host, PPPPLANPort)
+	return Open(duid, host, PPPPPort)
+}
+
+// OpenBroadcastLAN opens a broadcast-capable client for the full LAN handshake.
+// Unlike OpenBroadcast (discovery only), this sets the real DUID and starts in
+// StateConnecting so the client can complete the LanSearch→PunchPkt→P2pRdy
+// handshake. After PunchPkt is received, the remote addr is automatically
+// updated to the printer's IP on PPPPPort (32100) for the session.
+func OpenBroadcastLAN(duid protocol.Duid) (*Client, error) {
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return nil, fmt.Errorf("pppp: listen udp: %w", err)
+	}
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pppp: get raw conn: %w", err)
+	}
+	var setSockOptErr error
+	if ctrlErr := rawConn.Control(func(fd uintptr) {
+		setSockOptErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+	}); ctrlErr != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pppp: control raw conn: %w", ctrlErr)
+	}
+	if setSockOptErr != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pppp: set SO_BROADCAST: %w", setSockOptErr)
+	}
+	addr := &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort}
+	c := NewClient(conn, duid, addr)
+	// StateConnecting: handshake begins after ConnectLANSearch.
+	return c, nil
 }
 
 // OpenWAN opens a WAN PPPP client.
@@ -231,18 +264,31 @@ func (c *Client) process(msg any) {
 		// LAN handshake step 2: printer responds to LanSearch with PunchPkt.
 		// While connecting, send Close then P2pRdy to advance the handshake.
 		// Python reference: ppppapi.py process() PUNCH_PKT handler.
+		//
+		// DUID check: if this client has a non-zero DUID, only accept PunchPkt
+		// from the matching printer (important when multiple AnkerMake devices
+		// are on the network and we're using broadcast LanSearch).
 		if c.State() == StateConnecting {
-			_ = c.SendPacket(protocol.Close{}, nil)
-			_ = c.SendPacket(protocol.P2pRdy{DUID: c.duid}, nil)
+			emptyDUID := protocol.Duid{}
+			if c.duid == emptyDUID || m.DUID.String() == c.duid.String() {
+				// Switch remote addr to the PPPP session port (32100).
+				// The PunchPkt source gives us the printer's IP; we combine it
+				// with PPPPPort for all subsequent session traffic.
+				if cur := c.remoteAddr(); cur != nil {
+					c.setRemoteAddr(&net.UDPAddr{IP: cur.IP, Port: PPPPPort})
+				}
+				_ = c.SendPacket(protocol.Close{}, nil)
+				_ = c.SendPacket(protocol.P2pRdy{DUID: c.duid}, nil)
+			}
 		}
 	case protocol.P2pRdy:
 		// LAN handshake step 4: printer confirms with P2pRdy.
 		// Send P2pRdyAck and transition to Connected.
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPPort), Addr: net.IPv4zero}
 		_ = c.SendPacket(protocol.P2pRdyAck{DUID: c.duid, Host: host}, nil)
 		c.setState(StateConnected)
 	case protocol.Hello:
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPPort), Addr: net.IPv4zero}
 		_ = c.SendPacket(protocol.HelloAck{Host: host}, nil)
 	case protocol.PingReq:
 		_ = c.SendPacket(protocol.PingResp{}, nil)

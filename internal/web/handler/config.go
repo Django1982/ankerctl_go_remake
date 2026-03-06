@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/httpapi"
 	"github.com/django1982/ankerctl/internal/model"
+	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
 )
 
@@ -37,6 +39,10 @@ func (h *Handler) ConfigUpload(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to persist config")
 		return
 	}
+	// Kick off background LAN discovery for any printer that has a P2P DUID
+	// but no IP address yet. Discovered IPs are persisted to config + DB so the
+	// PPPP service can connect immediately on first start.
+	go h.discoverAndPersistPrinterIPs(cfg.Printers)
 	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -204,6 +210,10 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to persist config")
 		return
 	}
+
+	// Background discovery for any printer that still has no IP after all
+	// the existing fallback logic (existing config, DB cache).
+	go h.discoverAndPersistPrinterIPs(cfg.Printers)
 
 	slog.Info("cloud login successful", "email", email, "region", region)
 	h.writeJSON(w, http.StatusOK, map[string]string{"redirect": "/api/ankerctl/server/reload"})
@@ -412,4 +422,44 @@ func (h *Handler) UploadRateUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "upload_rate_mbps": rate})
+}
+
+// discoverAndPersistPrinterIPs runs LAN broadcast discovery for each printer
+// that has a P2P DUID but no known IP, and writes the result back to the
+// config file and the DB cache. Designed to be called in a background goroutine
+// after ConfigUpload or ConfigLogin.
+func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
+	for _, p := range printers {
+		if p.P2PDUID == "" || p.IPAddr != "" {
+			continue
+		}
+		p := p // capture for goroutine
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			ip, err := ppppclient.DiscoverLANIP(ctx, p.P2PDUID)
+			if err != nil {
+				slog.Warn("background IP discovery failed", "duid", p.P2PDUID, "error", err)
+				return
+			}
+			ipStr := ip.String()
+			slog.Info("background IP discovery succeeded", "duid", p.P2PDUID, "sn", p.SN, "ip", ipStr)
+			if h.cfg != nil {
+				_ = h.cfg.Modify(func(saved *model.Config) (*model.Config, error) {
+					if saved == nil {
+						return nil, nil
+					}
+					for i := range saved.Printers {
+						if saved.Printers[i].SN == p.SN && saved.Printers[i].IPAddr == "" {
+							saved.Printers[i].IPAddr = ipStr
+						}
+					}
+					return saved, nil
+				})
+			}
+			if h.db != nil && p.SN != "" {
+				_ = h.db.SetPrinterIP(p.SN, ipStr)
+			}
+		}()
+	}
 }
