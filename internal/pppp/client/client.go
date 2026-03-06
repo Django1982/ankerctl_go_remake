@@ -164,6 +164,8 @@ func (c *Client) ConnectLANSearch() error {
 }
 
 // Run starts the recv/process/retransmit loop.
+// On exit (context cancellation, connection close, or remote Close packet),
+// it sends a Close packet to the peer — matching Python ppppapi.py run().
 func (c *Client) Run(ctx context.Context) error {
 	c.mu.Lock()
 	if c.running {
@@ -179,15 +181,26 @@ func (c *Client) Run(ctx context.Context) error {
 	c.wg.Add(1)
 	defer c.wg.Done()
 
+	// Send Close packet on exit, matching Python's run() which always
+	// calls self.send(PktClose()) after the loop.
+	defer func() {
+		_ = c.sendClose()
+		c.setState(StateDisconnected)
+	}()
+
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.setState(StateDisconnected)
 			return nil
 		case <-ticker.C:
+			// Check if we were disconnected by a remote Close packet.
+			if c.State() == StateDisconnected {
+				return ErrConnectionReset
+			}
+
 			for _, ch := range c.chans {
 				for _, pkt := range ch.Poll(time.Now()) {
 					_ = c.SendPacket(pkt, nil)
@@ -208,6 +221,9 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}
 }
+
+// ErrConnectionReset is returned by Run when a remote Close packet is received.
+var ErrConnectionReset = errors.New("pppp: connection reset by remote")
 
 func (c *Client) process(msg any) {
 	switch m := msg.(type) {
@@ -246,8 +262,6 @@ func (c *Client) process(msg any) {
 	case protocol.Message:
 		// Fallback for unhandled typed packets that decode to raw Message.
 		switch m.Type {
-		case protocol.TypeClose:
-			c.setState(StateDisconnected)
 		case protocol.TypeDevLgnCRC:
 			// Printer device login with CRC — respond with DevLgnAckCrc.
 			// Python reference: ppppapi.py process() DEV_LGN_CRC handler.
@@ -272,6 +286,21 @@ func (c *Client) sendDevLgnAckCrc() error {
 		return fmt.Errorf("pppp: udp send dev_lgn_ack_crc: %w", err)
 	}
 	return nil
+}
+
+// sendClose sends a Close packet to the remote peer.
+// It is best-effort and ignores errors since we are shutting down.
+func (c *Client) sendClose() error {
+	addr := c.remoteAddr()
+	if addr == nil {
+		return nil // nowhere to send
+	}
+	raw, err := protocol.EncodePacket(protocol.Close{})
+	if err != nil {
+		return err
+	}
+	_, err = c.conn.WriteToUDP(raw, addr)
+	return err
 }
 
 // Recv reads one UDP datagram and decodes PPPP packet.

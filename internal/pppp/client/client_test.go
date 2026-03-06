@@ -109,6 +109,68 @@ func TestDiscoverLANIPWithConn(t *testing.T) {
 	}
 }
 
+func TestRunSendsCloseOnContextCancel(t *testing.T) {
+	// Verify that Run() sends a Close packet when the context is cancelled,
+	// matching Python's ppppapi.py run() which always sends PktClose() on exit.
+	mock := &mockUDPConn{}
+	addr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 50), Port: PPPPLANPort}
+	cli := NewClient(mock, protocol.Duid{Prefix: "ABCDEF", Serial: 1, Check: "QWERT"}, addr)
+	cli.state = StateConnecting
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after a brief delay so Run processes at least one tick.
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		cancel()
+	}()
+
+	err := cli.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	// Check that the last write was a Close packet.
+	mock.mu.Lock()
+	writes := mock.writes
+	mock.mu.Unlock()
+	if len(writes) == 0 {
+		t.Fatal("expected at least one write (Close), got 0")
+	}
+	last := writes[len(writes)-1]
+	decoded, err := protocol.DecodePacket(last.data)
+	if err != nil {
+		t.Fatalf("decode last write failed: %v", err)
+	}
+	if _, ok := decoded.(protocol.Close); !ok {
+		t.Fatalf("expected Close packet as last write, got %T", decoded)
+	}
+	if cli.State() != StateDisconnected {
+		t.Fatalf("expected StateDisconnected after Run, got %v", cli.State())
+	}
+}
+
+func TestRunReturnsErrConnectionResetOnRemoteClose(t *testing.T) {
+	// Verify that Run() returns ErrConnectionReset when a remote Close is received.
+	closePacket, err := protocol.EncodePacket(protocol.Close{})
+	if err != nil {
+		t.Fatalf("encode Close: %v", err)
+	}
+	addr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 50), Port: PPPPLANPort}
+	mock := &mockUDPConn{
+		reads: []queuedRead{{data: closePacket, addr: addr}},
+	}
+	cli := NewClient(mock, protocol.Duid{Prefix: "ABCDEF", Serial: 1, Check: "QWERT"}, addr)
+	cli.state = StateConnected
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	runErr := cli.Run(ctx)
+	if !errors.Is(runErr, ErrConnectionReset) {
+		t.Fatalf("expected ErrConnectionReset, got %v", runErr)
+	}
+}
+
 func TestDiscoverLANIPTimeout(t *testing.T) {
 	mock := &mockUDPConn{}
 	cli := NewClient(mock, protocol.Duid{}, &net.UDPAddr{IP: net.IPv4bcast, Port: PPPPLANPort})
