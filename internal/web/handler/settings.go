@@ -9,12 +9,12 @@ import (
 
 // SettingsTimelapseGet returns timelapse settings.
 func (h *Handler) SettingsTimelapseGet(w http.ResponseWriter, _ *http.Request) {
-	cfg, err := h.loadConfig()
-	if err != nil || cfg == nil {
-		h.writeError(w, http.StatusBadRequest, "No printers configured")
-		return
+	cfg, _ := h.loadConfig()
+	var tl model.TimelapseConfig
+	if cfg != nil {
+		tl = cfg.Timelapse
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"timelapse": cfg.Timelapse})
+	h.writeJSON(w, http.StatusOK, map[string]any{"timelapse": tl})
 }
 
 // SettingsTimelapseUpdate updates timelapse settings.
@@ -64,12 +64,12 @@ func (h *Handler) SettingsTimelapseUpdate(w http.ResponseWriter, r *http.Request
 
 // SettingsMQTTGet returns HomeAssistant MQTT settings.
 func (h *Handler) SettingsMQTTGet(w http.ResponseWriter, _ *http.Request) {
-	cfg, err := h.loadConfig()
-	if err != nil || cfg == nil {
-		h.writeError(w, http.StatusBadRequest, "No printers configured")
-		return
+	cfg, _ := h.loadConfig()
+	var ha model.HomeAssistantConfig
+	if cfg != nil {
+		ha = cfg.HomeAssistant
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"home_assistant": cfg.HomeAssistant})
+	h.writeJSON(w, http.StatusOK, map[string]any{"home_assistant": ha})
 }
 
 // SettingsMQTTUpdate updates HomeAssistant MQTT settings.

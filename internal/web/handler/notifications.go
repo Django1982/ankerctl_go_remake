@@ -11,12 +11,12 @@ import (
 
 // NotificationsGet returns apprise settings.
 func (h *Handler) NotificationsGet(w http.ResponseWriter, _ *http.Request) {
-	cfg, err := h.loadConfig()
-	if err != nil || cfg == nil {
-		h.writeError(w, http.StatusBadRequest, "No printers configured")
-		return
+	cfg, _ := h.loadConfig()
+	var apprise model.AppriseConfig
+	if cfg != nil {
+		apprise = cfg.Notifications.Apprise
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"apprise": cfg.Notifications.Apprise})
+	h.writeJSON(w, http.StatusOK, map[string]any{"apprise": apprise})
 }
 
 // NotificationsUpdate updates notification settings.
