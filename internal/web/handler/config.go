@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/django1982/ankerctl/internal/httpapi"
 	"github.com/django1982/ankerctl/internal/model"
+	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
 )
 
 // ConfigUpload imports config JSON from multipart upload.
@@ -146,10 +149,27 @@ func buildConfigFromLogin(loginMap map[string]any, fdmData any, region string) *
 				continue
 			}
 			printer := model.Printer{
-				SN:   stringVal(p, "station_sn"),
-				Name: stringVal(p, "station_name"),
+				ID:      stringVal(p, "station_id"),
+				SN:      stringVal(p, "station_sn"),
+				Name:    stringVal(p, "station_name"),
+				Model:   stringVal(p, "station_model"),
+				WifiMAC: stringVal(p, "wifi_mac"),
+				IPAddr:  stringVal(p, "ip_addr"),
+				P2PDUID: stringVal(p, "p2p_did"),
 			}
-			if mqttKeyHex, ok := p["secret_key"].(string); ok {
+			if ct, ok := p["create_time"].(float64); ok {
+				printer.CreateTime = time.Unix(int64(ct), 0)
+			}
+			if ut, ok := p["update_time"].(float64); ok {
+				printer.UpdateTime = time.Unix(int64(ut), 0)
+			}
+			if hosts, err := ppppcrypto.DecodeInitString(stringVal(p, "app_conn")); err == nil {
+				printer.APIHosts = strings.Join(hosts, ",")
+			}
+			if hosts, err := ppppcrypto.DecodeInitString(stringVal(p, "p2p_conn")); err == nil {
+				printer.P2PHosts = strings.Join(hosts, ",")
+			}
+			if mqttKeyHex := stringVal(p, "secret_key"); mqttKeyHex != "" {
 				if keyBytes, err := hex.DecodeString(mqttKeyHex); err == nil {
 					printer.MQTTKey = keyBytes
 				}
