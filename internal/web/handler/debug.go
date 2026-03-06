@@ -298,48 +298,68 @@ func (h *Handler) DiscoverPrinterIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PPPPReconnect restarts the ppppservice, waits up to 4 seconds for it to
-// reach Connected state, then returns the final state and recent log lines.
+// ppppServiceConn is the subset of PPPPService used by the reconnect handler.
+type ppppServiceConn interface {
+	service.Service
+	IsConnected() bool
+}
+
+// PPPPReconnect restarts the ppppservice, waits up to 6 seconds for the
+// PPPP handshake to complete, then returns the connection result and only
+// the log lines that were emitted during this attempt.
 // Route: POST /api/debug/pppp/reconnect (devMode only).
 func (h *Handler) PPPPReconnect(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureDevMode(w) {
 		return
 	}
-	svc, ok := h.serviceByName("ppppservice")
+	rawSvc, ok := h.serviceByName("ppppservice")
 	if !ok {
 		h.writeError(w, http.StatusServiceUnavailable, "ppppservice not registered")
 		return
 	}
+	pppp, ok := rawSvc.(ppppServiceConn)
+	if !ok {
+		h.writeError(w, http.StatusInternalServerError, "ppppservice type mismatch")
+		return
+	}
+
+	// Snapshot ring-buffer size before restart so we can return only NEW lines.
+	var preLen int
+	if h.logRing != nil {
+		preLen = len(h.logRing.Lines())
+	}
 
 	slog.Info("debug: manual PPPP reconnect triggered")
-	svc.Restart()
+	pppp.Restart()
 
-	// Poll for up to 4 seconds to see if we reach Connected.
-	deadline := time.Now().Add(4 * time.Second)
+	// Poll up to 6 s for the PPPP handshake to reach Connected (or fail).
+	deadline := time.Now().Add(6 * time.Second)
+	connected := false
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		if pppp, ok := h.serviceByName("ppppservice"); ok {
-			if pppp.State() == 3 { // StateRunning in service layer ≈ Connected
-				break
-			}
+		if pppp.IsConnected() {
+			connected = true
+			break
+		}
+		// Stop early if the service crashed without connecting.
+		if st := runStateName(pppp.State()); st == "Stopped" {
+			break
 		}
 	}
 
-	// Read final service state.
-	finalState := "unknown"
-	if pppp, ok := h.serviceByName("ppppservice"); ok {
-		finalState = runStateName(pppp.State())
-	}
-
-	// Grab the last 80 log lines from the ring buffer.
-	var logLines []string
+	// Collect only lines added since the restart.
+	var newLines []string
 	if h.logRing != nil {
-		logLines = h.logRing.Tail(80)
+		all := h.logRing.Lines()
+		if preLen < len(all) {
+			newLines = all[preLen:]
+		}
 	}
 
 	h.writeJSON(w, http.StatusOK, map[string]any{
-		"state": finalState,
-		"log":   logLines,
+		"connected": connected,
+		"state":     runStateName(pppp.State()),
+		"log":       newLines,
 	})
 }
 

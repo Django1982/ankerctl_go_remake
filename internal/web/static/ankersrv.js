@@ -2191,18 +2191,20 @@ $(function () {
                     const data = await resp.json();
 
                     // State badge
+                    const connected = data.connected === true;
                     const state = data.state || "unknown";
-                    const badgeClass = state === "Running" ? "bg-success" : (state === "Stopped" ? "bg-danger" : "bg-warning text-dark");
+                    const badgeClass = connected ? "bg-success" : (state === "Stopped" ? "bg-danger" : "bg-warning text-dark");
                     ppppReconnectState.className = "badge align-self-center " + badgeClass;
-                    ppppReconnectState.textContent = state;
+                    ppppReconnectState.textContent = connected ? "Connected ✓" : ("Not connected — " + state);
                     ppppReconnectState.style.removeProperty("display");
 
-                    // Log output
-                    if (data.log && data.log.length > 0) {
-                        ppppReconnectLog.textContent = data.log.join("\n");
-                        ppppReconnectLog.style.display = "block";
-                        ppppReconnectLog.scrollTop = ppppReconnectLog.scrollHeight;
-                    }
+                    // Log output — always show, even if empty, so user knows what happened
+                    const logText = (data.log && data.log.length > 0)
+                        ? data.log.join("\n")
+                        : "(no new log lines captured during this attempt)";
+                    ppppReconnectLog.textContent = logText;
+                    ppppReconnectLog.style.display = "block";
+                    ppppReconnectLog.scrollTop = ppppReconnectLog.scrollHeight;
                 } catch (err) {
                     ppppReconnectState.className = "badge align-self-center bg-danger";
                     ppppReconnectState.textContent = "Error: " + err;
