@@ -49,6 +49,8 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("login_email")
 	password := r.FormValue("login_password")
 	country := r.FormValue("login_country")
+	captchaID := r.FormValue("login_captcha_id")
+	captchaText := r.FormValue("login_captcha_text")
 	if email == "" || password == "" || country == "" {
 		h.writeError(w, http.StatusBadRequest, "missing login parameters")
 		return
@@ -71,10 +73,24 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginData, err := passport.Login(ctx, email, password, nil, nil)
+	loginData, err := passport.Login(ctx, email, password, nonEmptyPtr(captchaID), nonEmptyPtr(captchaText))
 	if err != nil {
+		// Check if the API is requesting a CAPTCHA (code 100032).
+		// Return 200 with captcha_id + captcha_url so the JS can display it.
+		if apiErr, ok := err.(*httpapi.APIError); ok && apiErr.JSON != nil {
+			if data, ok := apiErr.JSON["data"].(map[string]any); ok {
+				if cid, ok := data["captcha_id"].(string); ok && cid != "" {
+					img, _ := data["item"].(string)
+					h.writeJSON(w, http.StatusOK, map[string]string{
+						"captcha_id":  cid,
+						"captcha_url": img,
+					})
+					return
+				}
+			}
+		}
 		slog.Warn("cloud login failed", "error", err)
-		h.writeError(w, http.StatusUnauthorized, "cloud login failed: "+err.Error())
+		h.writeJSON(w, http.StatusOK, map[string]string{"error": "Login failed: " + err.Error()})
 		return
 	}
 
@@ -278,6 +294,14 @@ func buildConfigFromLogin(loginMap map[string]any, fdmData any, region string) *
 
 // stringVal extracts a string from a JSON-decoded map. It handles both
 // string values and JSON numbers (which json.Unmarshal decodes as float64).
+// nonEmptyPtr returns a pointer to s if non-empty, otherwise nil.
+func nonEmptyPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func stringVal(m map[string]any, key string) string {
 	switch v := m[key].(type) {
 	case string:
