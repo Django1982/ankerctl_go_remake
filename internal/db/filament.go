@@ -114,42 +114,42 @@ var filamentWritableFields = []string{
 // NOT NULL / DEFAULT constraints). Fields matching filamentTextFields
 // are sanitized before storage.
 type FilamentProfile struct {
-	ID                   int64
-	Name                 string
-	Brand                string
-	Material             string
-	Color                string
-	NozzleTempOtherLayer int
-	NozzleTempFirstLayer int
-	BedTempOtherLayer    int
-	BedTempFirstLayer    int
-	FlowRate             float64
-	FilamentDiameter     float64
-	PressureAdvance      float64
-	MaxVolumetricSpeed   float64
-	TravelSpeed          int
-	PerimeterSpeed       int
-	InfillSpeed          int
-	CoolingEnabled       bool
-	CoolingMinFanSpeed   int
-	CoolingMaxFanSpeed   int
-	SeamPosition         string
-	SeamGap              float64
-	ScarfEnabled         bool
-	ScarfConditional     bool
-	ScarfAngleThreshold  int
-	ScarfLength          float64
-	ScarfSteps           int
-	ScarfSpeed           int
-	RetractLength        float64
-	RetractSpeed         int
-	RetractLiftZ         float64
-	WipeEnabled          bool
-	WipeDistance         float64
-	WipeSpeed            int
-	WipeRetractBefore    bool
-	Notes                string
-	CreatedAt            string
+	ID                   int64   `json:"id"`
+	Name                 string  `json:"name"`
+	Brand                string  `json:"brand"`
+	Material             string  `json:"material"`
+	Color                string  `json:"color"`
+	NozzleTempOtherLayer int     `json:"nozzle_temp_other_layer"`
+	NozzleTempFirstLayer int     `json:"nozzle_temp_first_layer"`
+	BedTempOtherLayer    int     `json:"bed_temp_other_layer"`
+	BedTempFirstLayer    int     `json:"bed_temp_first_layer"`
+	FlowRate             float64 `json:"flow_rate"`
+	FilamentDiameter     float64 `json:"filament_diameter"`
+	PressureAdvance      float64 `json:"pressure_advance"`
+	MaxVolumetricSpeed   float64 `json:"max_volumetric_speed"`
+	TravelSpeed          int     `json:"travel_speed"`
+	PerimeterSpeed       int     `json:"perimeter_speed"`
+	InfillSpeed          int     `json:"infill_speed"`
+	CoolingEnabled       bool    `json:"cooling_enabled"`
+	CoolingMinFanSpeed   int     `json:"cooling_min_fan_speed"`
+	CoolingMaxFanSpeed   int     `json:"cooling_max_fan_speed"`
+	SeamPosition         string  `json:"seam_position"`
+	SeamGap              float64 `json:"seam_gap"`
+	ScarfEnabled         bool    `json:"scarf_enabled"`
+	ScarfConditional     bool    `json:"scarf_conditional"`
+	ScarfAngleThreshold  int     `json:"scarf_angle_threshold"`
+	ScarfLength          float64 `json:"scarf_length"`
+	ScarfSteps           int     `json:"scarf_steps"`
+	ScarfSpeed           int     `json:"scarf_speed"`
+	RetractLength        float64 `json:"retract_length"`
+	RetractSpeed         int     `json:"retract_speed"`
+	RetractLiftZ         float64 `json:"retract_lift_z"`
+	WipeEnabled          bool    `json:"wipe_enabled"`
+	WipeDistance         float64 `json:"wipe_distance"`
+	WipeSpeed            int     `json:"wipe_speed"`
+	WipeRetractBefore    bool    `json:"wipe_retract_before"`
+	Notes                string  `json:"notes"`
+	CreatedAt            string  `json:"created_at"`
 }
 
 // defaultFilaments are the four built-in profiles seeded when the table is

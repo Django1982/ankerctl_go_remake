@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+
+	"github.com/django1982/ankerctl/internal/model"
 )
 
 // Root serves the web UI placeholder.
@@ -24,6 +26,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		RequestPort:        port,
 	}
 
+	data.UploadRateChoices = model.UploadRateMbpsChoices
 	if cfg != nil {
 		data.Printers = cfg.Printers
 		data.Printer = printer
