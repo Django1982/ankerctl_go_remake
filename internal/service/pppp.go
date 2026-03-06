@@ -499,7 +499,11 @@ func (s *PPPPService) drainXzyh(channel byte, ch *protocol.Channel) error {
 			return nil
 		}
 
-		if channel == 1 {
+		if channel == 1 && len(frame) >= 64 {
+			// Channel 1 video frames have a 64-byte extended XZYH header.
+			// Only attempt VideoFrame parse when the frame is large enough;
+			// smaller XZYH frames on channel 1 (e.g. file transfer replies)
+			// fall through to the generic XZYH path.
 			vf, err := protocol.ParseVideoFrame(frame)
 			if err != nil {
 				s.log.Warn("video frame parse failed", "err", err)

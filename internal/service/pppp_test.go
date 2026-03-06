@@ -55,6 +55,7 @@ func TestPPPPService_ConnectionResetTriggersRestart(t *testing.T) {
 		clientFactor: func(context.Context) (ppppConn, error) { return fake, nil },
 		pollInterval: 1 * time.Millisecond,
 		handlers:     make(map[byte][]func([]byte)),
+		aabbHandlers: make(map[byte][]func(protocol.Aabb, []byte)),
 	}
 	svc.BindHooks(svc)
 
