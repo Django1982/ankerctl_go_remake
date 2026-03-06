@@ -115,8 +115,50 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 4: Build and save config.
+	// Step 3b: Collect SNs and fetch DSK keys (p2p_key per printer).
+	sns := fdmSNs(fdmData)
+	var dskKeys map[string]string // keyed by station_sn
+	if len(sns) > 0 {
+		dskData, dskErr := app.EquipmentGetDSKKeys(ctx, sns, nil)
+		if dskErr != nil {
+			slog.Warn("equipment_get_dsk_keys failed", "error", dskErr)
+		} else {
+			dskKeys = parseDSKKeys(dskData)
+		}
+		if h.devMode {
+			if raw, err2 := json.Marshal(dskData); err2 == nil {
+				slog.Debug("dsk_keys raw response", "json", string(raw))
+			}
+		}
+	}
+
+	// Step 4: Build config and apply DSK keys.
 	cfg := buildConfigFromLogin(loginMap, fdmData, region)
+	for i := range cfg.Printers {
+		if key, ok := dskKeys[cfg.Printers[i].SN]; ok && key != "" {
+			cfg.Printers[i].P2PKey = key
+		}
+	}
+
+	// Step 4b: Preserve IPs from existing config (API may omit ip_addr
+	// when the printer is offline — mirrors Python update_empty_printer_ips).
+	if h.cfg != nil {
+		if existing, loadErr := h.cfg.Load(); loadErr == nil && existing != nil {
+			existingIPs := make(map[string]string)
+			for _, p := range existing.Printers {
+				if p.SN != "" && p.IPAddr != "" {
+					existingIPs[p.SN] = p.IPAddr
+				}
+			}
+			for i := range cfg.Printers {
+				if cfg.Printers[i].IPAddr == "" {
+					if ip, ok := existingIPs[cfg.Printers[i].SN]; ok {
+						cfg.Printers[i].IPAddr = ip
+					}
+				}
+			}
+		}
+	}
 
 	if h.cfg == nil {
 		h.writeError(w, http.StatusServiceUnavailable, "config manager unavailable")
@@ -129,6 +171,51 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("cloud login successful", "email", email, "region", region)
 	h.writeJSON(w, http.StatusOK, map[string]string{"redirect": "/api/ankerctl/server/reload"})
+}
+
+// fdmSNs returns the list of station_sn values from the FDM list response.
+func fdmSNs(fdmData any) []string {
+	list, ok := fdmData.([]any)
+	if !ok {
+		return nil
+	}
+	var sns []string
+	for _, item := range list {
+		p, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if sn := stringVal(p, "station_sn"); sn != "" {
+			sns = append(sns, sn)
+		}
+	}
+	return sns
+}
+
+// parseDSKKeys extracts a map[station_sn]dsk_key from the equipment_get_dsk_keys response.
+// Response shape: {"dsk_keys": [{"station_sn": "...", "dsk_key": "..."}, ...]}
+func parseDSKKeys(data any) map[string]string {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return nil
+	}
+	list, ok := m["dsk_keys"].([]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]string, len(list))
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		sn := stringVal(entry, "station_sn")
+		key := stringVal(entry, "dsk_key")
+		if sn != "" {
+			result[sn] = key
+		}
+	}
+	return result
 }
 
 // buildConfigFromLogin constructs a Config from login and FDM list responses.
