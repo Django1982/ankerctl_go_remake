@@ -18,6 +18,9 @@ func (s *Server) registerRoutes() {
 
 	// Static files
 	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))
+	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/static/img/logo.svg", http.StatusMovedPermanently)
+	})
 
 	// Page routes
 	r.Get("/", h.Root)

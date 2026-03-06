@@ -33,7 +33,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		data.LoginFilePath = h.cfg.ConfigDir()
 	}
 
-	if err := h.render(w, "index.html", data); err != nil {
+	if err := h.render(w, "base.html", data); err != nil {
 		h.log.Error("render root", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "rendering failed")
 	}
