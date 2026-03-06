@@ -12,6 +12,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/logging"
 	"github.com/django1982/ankerctl/internal/model"
 	"github.com/django1982/ankerctl/internal/service"
 )
@@ -73,6 +74,7 @@ type Handler struct {
 	devMode       bool
 	render        RenderFunc
 	stateReloader StateReloader
+	logRing       *logging.RingBuffer
 }
 
 // New creates a handler bundle.
@@ -86,6 +88,12 @@ func New(cfg *config.Manager, database *db.DB, svc *service.ServiceManager, log 
 // WithStateReloader sets the StateReloader used by ServerReload and ConfigLogout.
 func (h *Handler) WithStateReloader(r StateReloader) {
 	h.stateReloader = r
+}
+
+// WithLogRing attaches an in-memory log ring buffer so the debug log viewer
+// can serve recent log output as "live.log" without requiring log files.
+func (h *Handler) WithLogRing(ring *logging.RingBuffer) {
+	h.logRing = ring
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload any) {

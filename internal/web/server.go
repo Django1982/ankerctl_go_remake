@@ -17,6 +17,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/logging"
 	"github.com/django1982/ankerctl/internal/model"
 	"github.com/django1982/ankerctl/internal/service"
 	mw "github.com/django1982/ankerctl/internal/web/middleware"
@@ -44,6 +45,7 @@ type Server struct {
 	database   *db.DB
 	services   *service.ServiceManager
 	logger     *slog.Logger
+	logRing    *logging.RingBuffer
 
 	sessionManager *mw.SessionManager
 	templates      *Templates
@@ -156,6 +158,14 @@ func WithDevMode(dev bool) Option {
 	return func(s *Server) {
 		s.devMode = dev
 		s.devModeSet = true
+	}
+}
+
+// WithLogRing attaches an in-memory ring buffer to the server so the debug
+// log viewer can serve recent structured log output without requiring log files.
+func WithLogRing(ring *logging.RingBuffer) Option {
+	return func(s *Server) {
+		s.logRing = ring
 	}
 }
 

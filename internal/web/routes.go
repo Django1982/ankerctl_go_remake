@@ -16,6 +16,9 @@ func (s *Server) registerRoutes() {
 
 	h := handler.New(s.config, s.database, s.services, s.logger, s.devMode, rf)
 	h.WithStateReloader(s)
+	if s.logRing != nil {
+		h.WithLogRing(s.logRing)
+	}
 
 	// Static files
 	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))
@@ -89,6 +92,7 @@ func (s *Server) registerRoutes() {
 		r.Get("/api/debug/services", h.DebugServices)
 		r.Post("/api/debug/services/{name}/restart", h.DebugServiceRestart)
 		r.Post("/api/debug/services/{name}/test", h.DebugServiceTest)
+		r.Post("/api/debug/pppp/discover", h.DiscoverPrinterIP)
 		r.Get("/api/debug/bed-leveling", h.BedLevelingLive)
 	}
 

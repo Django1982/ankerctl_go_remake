@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/django1982/ankerctl/internal/config"
+	"github.com/django1982/ankerctl/internal/db"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
 	"github.com/google/uuid"
@@ -38,14 +39,20 @@ type PPPPService struct {
 	clientFactor ppppClientFactory
 	pollInterval time.Duration
 
-	handlersMu sync.RWMutex
-	handlers   map[byte][]func([]byte)
+	handlersMu    sync.RWMutex
+	handlers      map[byte][]func([]byte)
 	videoHandlers []func(protocol.VideoFrame)
 	aabbHandlers  map[byte][]func(protocol.Aabb, []byte)
 }
 
 // NewPPPPService creates a PPPP service.
 func NewPPPPService(cfg *config.Manager, printerIndex int) *PPPPService {
+	return NewPPPPServiceWithDB(cfg, printerIndex, nil)
+}
+
+// NewPPPPServiceWithDB creates a PPPP service that consults a DB cache for
+// the last-known printer IP before falling back to a LAN broadcast.
+func NewPPPPServiceWithDB(cfg *config.Manager, printerIndex int, database *db.DB) *PPPPService {
 	s := &PPPPService{
 		BaseWorker:   NewBaseWorker("ppppservice"),
 		log:          slog.With("service", "ppppservice"),
@@ -53,12 +60,12 @@ func NewPPPPService(cfg *config.Manager, printerIndex int) *PPPPService {
 		handlers:     make(map[byte][]func([]byte)),
 		aabbHandlers: make(map[byte][]func(protocol.Aabb, []byte)),
 	}
-	s.clientFactor = defaultPPPPClientFactory(cfg, printerIndex)
+	s.clientFactor = defaultPPPPClientFactory(cfg, printerIndex, database)
 	s.BindHooks(s)
 	return s
 }
 
-func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int) ppppClientFactory {
+func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int, database *db.DB) ppppClientFactory {
 	return func(ctx context.Context) (ppppConn, error) {
 		if cfgMgr == nil {
 			return nil, errors.New("ppppservice: config manager is nil")
@@ -81,20 +88,36 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int) ppppClie
 		}
 
 		host := printer.IPAddr
+
+		// If the config has no IP, consult the DB cache before doing a broadcast.
+		if host == "" && database != nil && printer.SN != "" {
+			if cachedIP, dbErr := database.GetPrinterIP(printer.SN); dbErr == nil && cachedIP != "" {
+				slog.Info("ppppservice: using cached IP from DB", "ip", cachedIP, "sn", printer.SN)
+				host = cachedIP
+			}
+		}
+
 		if host == "" {
 			ip, err := ppppclient.DiscoverLANIP(ctx, printer.P2PDUID)
 			if err != nil {
 				return nil, fmt.Errorf("ppppservice: discover printer ip: %w", err)
 			}
 			host = ip.String()
-			slog.Info("ppppservice: discovered printer IP via LAN broadcast", "ip", host, "duid", printer.P2PDUID)
-			// Persist the discovered IP so future restarts skip the broadcast.
+			slog.Info("ppppservice: discovered printer IP via LAN broadcast", "ip", host)
+
+			// Persist the discovered IP in both config and DB cache so future
+			// restarts and re-logins can skip the broadcast.
 			if saved, saveErr := cfgMgr.Load(); saveErr == nil && saved != nil {
 				if printerIndex < len(saved.Printers) && saved.Printers[printerIndex].IPAddr == "" {
 					saved.Printers[printerIndex].IPAddr = host
 					if saveErr := cfgMgr.Save(saved); saveErr != nil {
-						slog.Warn("ppppservice: could not persist discovered IP", "error", saveErr)
+						slog.Warn("ppppservice: could not persist discovered IP to config", "error", saveErr)
 					}
+				}
+			}
+			if database != nil && printer.SN != "" {
+				if dbErr := database.SetPrinterIP(printer.SN, host); dbErr != nil {
+					slog.Warn("ppppservice: could not persist discovered IP to db", "error", dbErr)
 				}
 			}
 		}

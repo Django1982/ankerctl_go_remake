@@ -13,6 +13,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/logging"
 	"github.com/django1982/ankerctl/internal/notifications"
 	"github.com/django1982/ankerctl/internal/service"
 	"github.com/django1982/ankerctl/internal/web"
@@ -75,12 +76,21 @@ func newWebserverCmd() *cobra.Command {
 	}
 }
 
+// globalLogRing is the in-memory ring buffer capturing the last 2000 log lines.
+// It is initialised in runWebserver and shared with the web handler layer via
+// web.WithLogRing so the debug log viewer can serve it as "live.log".
+var globalLogRing = logging.NewRingBuffer(2000)
+
 func runWebserver() error {
-	logger := slog.Default()
+	// Build base handler: text to stderr (debug-level in dev mode, info otherwise).
+	level := slog.LevelInfo
 	if devMode {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		slog.SetDefault(logger)
+		level = slog.LevelDebug
 	}
+	baseHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	ringHandler := logging.NewRingBufferHandler(baseHandler, globalLogRing)
+	logger := slog.New(ringHandler)
+	slog.SetDefault(logger)
 
 	// 1. Config
 	cfgMgr, err := config.NewManager(configDir)
@@ -101,7 +111,7 @@ func runWebserver() error {
 
 	// 4. Services
 	// Background services monitor the printer specified by printerIdx.
-	pppp := service.NewPPPPService(cfgMgr, printerIdx)
+	pppp := service.NewPPPPServiceWithDB(cfgMgr, printerIdx, database)
 	sm.Register(pppp)
 
 	video := service.NewVideoQueue(pppp, pppp)
@@ -124,6 +134,7 @@ func runWebserver() error {
 		web.WithDatabase(database),
 		web.WithServiceManager(sm),
 		web.WithDevMode(devMode),
+		web.WithLogRing(globalLogRing),
 	}
 	if serverListen != "" {
 		webOpts = append(webOpts, web.WithListen(serverListen))
