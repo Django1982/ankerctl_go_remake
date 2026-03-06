@@ -1,15 +1,23 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/django1982/ankerctl/internal/logging"
+	"github.com/django1982/ankerctl/internal/model"
+	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
+	"github.com/django1982/ankerctl/internal/service"
 )
 
 func (h *Handler) ensureDevMode(w http.ResponseWriter) bool {
@@ -69,32 +77,41 @@ func (h *Handler) DebugSimulate(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// DebugLogsList lists log files.
+const liveLogFilename = "live.log"
+
+// DebugLogsList lists log files. It always includes a virtual "live.log" entry
+// backed by the in-memory ring buffer, plus any real .log files found in
+// ANKERCTL_LOG_DIR (defaults to /logs).
 func (h *Handler) DebugLogsList(w http.ResponseWriter, _ *http.Request) {
 	if !h.devMode {
 		h.writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+
+	// Always expose the live ring buffer as the first entry.
+	files := []string{liveLogFilename}
+
 	logDir := strings.TrimSpace(os.Getenv("ANKERCTL_LOG_DIR"))
 	if logDir == "" {
 		logDir = "/logs"
 	}
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		h.writeJSON(w, http.StatusOK, map[string]any{"files": []string{}})
-		return
-	}
-	files := make([]string, 0)
-	for _, e := range entries {
-		if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
-			files = append(files, e.Name())
+	if entries, err := os.ReadDir(logDir); err == nil {
+		var diskFiles []string
+		for _, e := range entries {
+			if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
+				diskFiles = append(diskFiles, e.Name())
+			}
 		}
+		sort.Strings(diskFiles)
+		files = append(files, diskFiles...)
 	}
-	sort.Strings(files)
+
 	h.writeJSON(w, http.StatusOK, map[string]any{"files": files})
 }
 
-// DebugLogsContent returns tail of log file.
+// DebugLogsContent returns the tail of a log file. The special filename
+// "live.log" is served from the in-memory ring buffer; all other names are
+// resolved relative to ANKERCTL_LOG_DIR.
 func (h *Handler) DebugLogsContent(w http.ResponseWriter, r *http.Request) {
 	if !h.devMode {
 		h.writeError(w, http.StatusNotFound, "not found")
@@ -105,6 +122,24 @@ func (h *Handler) DebugLogsContent(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "Invalid filename")
 		return
 	}
+
+	linesLimit := 500
+	if raw := r.URL.Query().Get("lines"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			linesLimit = v
+		}
+	}
+
+	// Serve the virtual "live.log" from the ring buffer.
+	if filename == liveLogFilename {
+		var content string
+		if h.logRing != nil {
+			content = strings.Join(h.logRing.Tail(linesLimit), "\n")
+		}
+		h.writeJSON(w, http.StatusOK, map[string]any{"filename": filename, "content": content})
+		return
+	}
+
 	logDir := strings.TrimSpace(os.Getenv("ANKERCTL_LOG_DIR"))
 	if logDir == "" {
 		logDir = "/logs"
@@ -121,12 +156,6 @@ func (h *Handler) DebugLogsContent(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, "File not found")
 		return
 	}
-	linesLimit := 500
-	if raw := r.URL.Query().Get("lines"); raw != "" {
-		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
-			linesLimit = v
-		}
-	}
 	content := tailLines(string(data), linesLimit)
 	h.writeJSON(w, http.StatusOK, map[string]any{"filename": filename, "content": content})
 }
@@ -140,6 +169,22 @@ func tailLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[len(lines)-n:], "\n")
+}
+
+// runStateName maps a RunState integer to the string expected by the JS UI.
+func runStateName(s service.RunState) string {
+	switch s {
+	case service.StateStopped:
+		return "Stopped"
+	case service.StateStarting:
+		return "Starting"
+	case service.StateRunning:
+		return "Running"
+	case service.StateStopping:
+		return "Stopping"
+	default:
+		return "Unknown"
+	}
 }
 
 // DebugServices returns registered services with state and refs.
@@ -157,7 +202,7 @@ func (h *Handler) DebugServices(w http.ResponseWriter, _ *http.Request) {
 	result := make(map[string]any, len(svcs))
 	for name, svc := range svcs {
 		result[name] = map[string]any{
-			"state": int(svc.State()),
+			"state": runStateName(svc.State()),
 			"refs":  refs[name],
 			"type":  "service",
 		}
@@ -179,6 +224,78 @@ func (h *Handler) DebugServiceRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	go svc.Restart()
 	h.writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
+}
+
+// DiscoverPrinterIP runs a LAN broadcast discovery for the active printer's
+// DUID, returns the discovered IP address, and persists it in config.
+// Route: POST /api/debug/pppp/discover (devMode only).
+func (h *Handler) DiscoverPrinterIP(w http.ResponseWriter, r *http.Request) {
+	if !h.ensureDevMode(w) {
+		return
+	}
+
+	cfg, err := h.loadConfig()
+	if err != nil || cfg == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "config unavailable")
+		return
+	}
+
+	printer, _, _ := h.activePrinter(cfg)
+	if printer == nil {
+		h.writeError(w, http.StatusPreconditionFailed, "no printer configured")
+		return
+	}
+	if printer.P2PDUID == "" {
+		h.writeError(w, http.StatusPreconditionFailed, "printer has no P2P DUID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	ip, err := ppppclient.DiscoverLANIP(ctx, printer.P2PDUID)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		slog.Warn("LAN discovery failed", "duid", logging.Redact(map[string]any{"p2p_duid": printer.P2PDUID})["p2p_duid"], "error", err)
+		h.writeJSON(w, http.StatusOK, map[string]any{
+			"error":      "timeout after 5s",
+			"elapsed_ms": elapsed.Milliseconds(),
+		})
+		return
+	}
+
+	ipStr := ip.String()
+	slog.Info("LAN discovery succeeded", "ip", ipStr, "elapsed_ms", elapsed.Milliseconds())
+
+	// Persist discovered IP into config and DB cache.
+	if h.cfg != nil {
+		saveErr := h.cfg.Modify(func(saved *model.Config) (*model.Config, error) {
+			if saved == nil {
+				return nil, nil
+			}
+			_, idx, _ := h.activePrinter(saved)
+			if idx >= 0 && idx < len(saved.Printers) {
+				saved.Printers[idx].IPAddr = ipStr
+			}
+			return saved, nil
+		})
+		if saveErr != nil {
+			slog.Warn("discover: could not persist IP to config", "error", saveErr)
+		}
+	}
+	if h.db != nil && printer.SN != "" {
+		if dbErr := h.db.SetPrinterIP(printer.SN, ipStr); dbErr != nil {
+			slog.Warn("discover: could not cache IP in db", "error", dbErr)
+		}
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"ip":         ipStr,
+		"duid":       printer.P2PDUID,
+		"elapsed_ms": elapsed.Milliseconds(),
+	})
 }
 
 // DebugServiceTest runs service probe (currently only ppppservice).

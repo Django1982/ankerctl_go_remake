@@ -158,6 +158,7 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Step 4b: Preserve IPs from existing config (API may omit ip_addr
 	// when the printer is offline — mirrors Python update_empty_printer_ips).
+	// Fall back to the printer_cache DB so IPs survive logout/login cycles.
 	if h.cfg != nil {
 		if existing, loadErr := h.cfg.Load(); loadErr == nil && existing != nil {
 			existingIPs := make(map[string]string)
@@ -172,6 +173,25 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 						cfg.Printers[i].IPAddr = ip
 					}
 				}
+			}
+		}
+	}
+	// DB fallback: restore IPs for any printer still missing one.
+	if h.db != nil {
+		for i := range cfg.Printers {
+			if cfg.Printers[i].IPAddr == "" && cfg.Printers[i].SN != "" {
+				if cachedIP, dbErr := h.db.GetPrinterIP(cfg.Printers[i].SN); dbErr == nil && cachedIP != "" {
+					cfg.Printers[i].IPAddr = cachedIP
+					slog.Info("restored printer IP from cache", "sn", cfg.Printers[i].SN, "ip", cachedIP)
+				}
+			}
+		}
+	}
+	// Write all known IPs into the cache for future logins.
+	if h.db != nil {
+		for _, p := range cfg.Printers {
+			if p.SN != "" && p.IPAddr != "" {
+				_ = h.db.SetPrinterIP(p.SN, p.IPAddr)
 			}
 		}
 	}
