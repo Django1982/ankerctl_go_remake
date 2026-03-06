@@ -188,6 +188,23 @@ func stringVal(m map[string]any, key string) string {
 	return v
 }
 
+// ConfigLogout deletes the stored credentials and stops all services,
+// then redirects to root (which will show the setup tab).
+func (h *Handler) ConfigLogout(w http.ResponseWriter, r *http.Request) {
+	if h.cfg == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "config manager unavailable")
+		return
+	}
+	if err := h.cfg.Delete(); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "logout failed: "+err.Error())
+		return
+	}
+	if h.svc != nil {
+		h.svc.RestartAll()
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
 // ServerReload restarts all registered services and redirects to root.
 func (h *Handler) ServerReload(w http.ResponseWriter, r *http.Request) {
 	if h.svc != nil {

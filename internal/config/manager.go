@@ -107,6 +107,20 @@ func (m *Manager) loadLocked() (*model.Config, error) {
 	return &cfg, nil
 }
 
+// Delete removes the default configuration file, effectively logging out.
+// Returns nil if the file did not exist.
+func (m *Manager) Delete() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	path := m.configPath(defaultConfigFileName)
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete config: %w", err)
+	}
+	return nil
+}
+
 // Save writes the configuration to the default config file.
 func (m *Manager) Save(cfg *model.Config) error {
 	m.mu.Lock()

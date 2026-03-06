@@ -34,6 +34,7 @@ func (s *Server) registerRoutes() {
 	// Config
 	r.Post("/api/ankerctl/config/upload", h.ConfigUpload)
 	r.Post("/api/ankerctl/config/login", h.ConfigLogin)
+	r.Post("/api/ankerctl/config/logout", h.ConfigLogout)
 	r.Get("/api/ankerctl/server/reload", h.ServerReload)
 	r.Post("/api/ankerctl/config/upload-rate", h.UploadRateUpdate)
 

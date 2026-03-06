@@ -109,10 +109,18 @@
                                                     </div>
                                                 </div>
 
-                                                <div class="col-md-3 justify-content-end d-flex">
+                                                <div class="col-md-3 justify-content-end d-flex gap-2">
                                                     <button class="btn btn-secondary submit" type="submit" id="login">
                                                         <i class="bi-box-arrow-in-right px-1"></i>Fetch
                                                     </button>
+                                                    {{if .Configure}}
+                                                    <form action="/api/ankerctl/config/logout" method="POST"
+                                                        onsubmit="return confirm('Remove saved credentials and log out?')">
+                                                        <button class="btn btn-outline-danger" type="submit">
+                                                            <i class="bi-box-arrow-right px-1"></i>Logout
+                                                        </button>
+                                                    </form>
+                                                    {{end}}
                                                 </div>
                                             </div>
                                         </div>
