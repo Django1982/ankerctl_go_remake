@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -108,6 +109,11 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("query_fdm_list failed", "error", err)
 		// Non-fatal: login succeeded but could not fetch printers.
 	}
+	if h.devMode {
+		if raw, err2 := json.Marshal(fdmData); err2 == nil {
+			slog.Debug("fdm_list raw response", "json", string(raw))
+		}
+	}
 
 	// Step 4: Build and save config.
 	cfg := buildConfigFromLogin(loginMap, fdmData, region)
@@ -183,9 +189,21 @@ func buildConfigFromLogin(loginMap map[string]any, fdmData any, region string) *
 	return cfg
 }
 
+// stringVal extracts a string from a JSON-decoded map. It handles both
+// string values and JSON numbers (which json.Unmarshal decodes as float64).
 func stringVal(m map[string]any, key string) string {
-	v, _ := m[key].(string)
-	return v
+	switch v := m[key].(type) {
+	case string:
+		return v
+	case float64:
+		// Integer-valued float → no decimal point.
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d", int64(v))
+		}
+		return fmt.Sprintf("%g", v)
+	default:
+		return ""
+	}
 }
 
 // ConfigLogout deletes the stored credentials and stops all services,
