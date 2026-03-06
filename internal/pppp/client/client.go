@@ -268,15 +268,15 @@ func (c *Client) process(msg any) {
 		// DUID check: if this client has a non-zero DUID, only accept PunchPkt
 		// from the matching printer (important when multiple AnkerMake devices
 		// are on the network and we're using broadcast LanSearch).
+		//
+		// We reply to the printer's PunchPkt source address (the ephemeral port
+		// it sent from). Python ppppapi.py does the same — it never switches to
+		// a different port for the handshake. Port 32100 is for WAN (cloud relay)
+		// or the post-handshake data phase; the handshake itself uses whatever
+		// addr the printer sent PunchPkt from.
 		if c.State() == StateConnecting {
 			emptyDUID := protocol.Duid{}
 			if c.duid == emptyDUID || m.DUID.String() == c.duid.String() {
-				// Switch remote addr to the PPPP session port (32100).
-				// The PunchPkt source gives us the printer's IP; we combine it
-				// with PPPPPort for all subsequent session traffic.
-				if cur := c.remoteAddr(); cur != nil {
-					c.setRemoteAddr(&net.UDPAddr{IP: cur.IP, Port: PPPPPort})
-				}
 				_ = c.SendPacket(protocol.Close{}, nil)
 				_ = c.SendPacket(protocol.P2pRdy{DUID: c.duid}, nil)
 			}
@@ -284,11 +284,11 @@ func (c *Client) process(msg any) {
 	case protocol.P2pRdy:
 		// LAN handshake step 4: printer confirms with P2pRdy.
 		// Send P2pRdyAck and transition to Connected.
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPPort), Addr: net.IPv4zero}
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
 		_ = c.SendPacket(protocol.P2pRdyAck{DUID: c.duid, Host: host}, nil)
 		c.setState(StateConnected)
 	case protocol.Hello:
-		host := protocol.Host{AFamily: 2, Port: uint16(PPPPPort), Addr: net.IPv4zero}
+		host := protocol.Host{AFamily: 2, Port: uint16(PPPPLANPort), Addr: net.IPv4zero}
 		_ = c.SendPacket(protocol.HelloAck{Host: host}, nil)
 	case protocol.PingReq:
 		_ = c.SendPacket(protocol.PingResp{}, nil)

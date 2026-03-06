@@ -89,10 +89,9 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int, database
 
 		// Always use broadcast LAN handshake (LanSearch on port 32108).
 		// The printer only responds to broadcast LanSearch, not unicast.
-		// After PunchPkt is received, process() switches the remote addr to
-		// the printer IP on PPPPPort (32100) for the actual PPPP session.
-		// The DUID filter in process() ensures we latch onto the right printer
-		// even when multiple AnkerMake devices are on the network.
+		// After PunchPkt is received the client replies to the printer's
+		// source address; the DUID filter ensures we latch onto the right
+		// printer even when multiple AnkerMake devices are on the network.
 		if knownIP := printer.IPAddr; knownIP != "" {
 			slog.Info("ppppservice: known IP in config (broadcasting for handshake)", "ip", knownIP, "duid", printer.P2PDUID)
 		} else if database != nil && printer.SN != "" {
