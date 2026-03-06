@@ -298,6 +298,51 @@ func (h *Handler) DiscoverPrinterIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// PPPPReconnect restarts the ppppservice, waits up to 4 seconds for it to
+// reach Connected state, then returns the final state and recent log lines.
+// Route: POST /api/debug/pppp/reconnect (devMode only).
+func (h *Handler) PPPPReconnect(w http.ResponseWriter, r *http.Request) {
+	if !h.ensureDevMode(w) {
+		return
+	}
+	svc, ok := h.serviceByName("ppppservice")
+	if !ok {
+		h.writeError(w, http.StatusServiceUnavailable, "ppppservice not registered")
+		return
+	}
+
+	slog.Info("debug: manual PPPP reconnect triggered")
+	svc.Restart()
+
+	// Poll for up to 4 seconds to see if we reach Connected.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		if pppp, ok := h.serviceByName("ppppservice"); ok {
+			if pppp.State() == 3 { // StateRunning in service layer ≈ Connected
+				break
+			}
+		}
+	}
+
+	// Read final service state.
+	finalState := "unknown"
+	if pppp, ok := h.serviceByName("ppppservice"); ok {
+		finalState = runStateName(pppp.State())
+	}
+
+	// Grab the last 80 log lines from the ring buffer.
+	var logLines []string
+	if h.logRing != nil {
+		logLines = h.logRing.Tail(80)
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"state": finalState,
+		"log":   logLines,
+	})
+}
+
 // DebugServiceTest runs service probe (currently only ppppservice).
 func (h *Handler) DebugServiceTest(w http.ResponseWriter, r *http.Request) {
 	if !h.devMode {

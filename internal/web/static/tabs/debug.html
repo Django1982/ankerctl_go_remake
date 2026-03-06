@@ -70,6 +70,18 @@
                                 <button class="btn btn-sm btn-outline-warning disabled">
                                     <i class="bi-ban px-1"></i> Force Close Orphans (TODO)
                                 </button>
+
+                                <hr>
+                                <h6 class="text-muted small mb-2">PPPP Connection</h6>
+                                <div class="d-flex gap-2 mb-2">
+                                    <button class="btn btn-sm btn-outline-primary" id="dbg-pppp-reconnect">
+                                        <i class="bi-arrow-repeat px-1"></i> Trigger LanSearch
+                                    </button>
+                                    <span class="badge align-self-center" id="dbg-pppp-reconnect-state" style="display:none!important"></span>
+                                </div>
+                                <pre class="bg-dark text-light rounded p-2 small"
+                                    id="dbg-pppp-reconnect-log"
+                                    style="display:none;max-height:300px;overflow-y:auto;font-size:0.72rem;white-space:pre-wrap;word-break:break-all"></pre>
                             </div>
                         </div>
                     </div>

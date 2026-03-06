@@ -93,6 +93,7 @@ func (s *Server) registerRoutes() {
 		r.Post("/api/debug/services/{name}/restart", h.DebugServiceRestart)
 		r.Post("/api/debug/services/{name}/test", h.DebugServiceTest)
 		r.Post("/api/debug/pppp/discover", h.DiscoverPrinterIP)
+		r.Post("/api/debug/pppp/reconnect", h.PPPPReconnect)
 		r.Get("/api/debug/bed-leveling", h.BedLevelingLive)
 	}
 

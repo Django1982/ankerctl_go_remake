@@ -2173,6 +2173,48 @@ $(function () {
         });
 
         // ------------------------------------------------------------------
+        // PPPP Reconnect
+        // ------------------------------------------------------------------
+
+        const ppppReconnectBtn  = document.getElementById("dbg-pppp-reconnect");
+        const ppppReconnectLog  = document.getElementById("dbg-pppp-reconnect-log");
+        const ppppReconnectState = document.getElementById("dbg-pppp-reconnect-state");
+
+        if (ppppReconnectBtn) {
+            ppppReconnectBtn.addEventListener("click", async function () {
+                ppppReconnectBtn.disabled = true;
+                ppppReconnectBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Connecting...';
+                ppppReconnectLog.style.display = "none";
+                ppppReconnectState.style.display = "none";
+                try {
+                    const resp = await fetch("/api/debug/pppp/reconnect", { method: "POST" });
+                    const data = await resp.json();
+
+                    // State badge
+                    const state = data.state || "unknown";
+                    const badgeClass = state === "Running" ? "bg-success" : (state === "Stopped" ? "bg-danger" : "bg-warning text-dark");
+                    ppppReconnectState.className = "badge align-self-center " + badgeClass;
+                    ppppReconnectState.textContent = state;
+                    ppppReconnectState.style.removeProperty("display");
+
+                    // Log output
+                    if (data.log && data.log.length > 0) {
+                        ppppReconnectLog.textContent = data.log.join("\n");
+                        ppppReconnectLog.style.display = "block";
+                        ppppReconnectLog.scrollTop = ppppReconnectLog.scrollHeight;
+                    }
+                } catch (err) {
+                    ppppReconnectState.className = "badge align-self-center bg-danger";
+                    ppppReconnectState.textContent = "Error: " + err;
+                    ppppReconnectState.style.removeProperty("display");
+                } finally {
+                    ppppReconnectBtn.disabled = false;
+                    ppppReconnectBtn.innerHTML = '<i class="bi-arrow-repeat px-1"></i> Trigger LanSearch';
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------
         // Simulation
         // ------------------------------------------------------------------
 
