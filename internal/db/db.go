@@ -90,6 +90,10 @@ func (d *DB) migrate() error {
 		return fmt.Errorf("filament migration: %w", err)
 	}
 
+	if err := migratePrinterCache(d.db); err != nil {
+		return fmt.Errorf("printer cache migration: %w", err)
+	}
+
 	return nil
 }
 
