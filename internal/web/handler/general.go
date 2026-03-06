@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 )
@@ -11,6 +12,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := h.loadConfig()
 	printer, activeIdx, locked := h.activePrinter(cfg)
 
+	host, port := requestHostPort(r)
 	data := TemplateData{
 		ActivePrinterIndex: activeIdx,
 		PrinterIndexLocked: locked,
@@ -18,6 +20,8 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		DebugMode:          h.devMode,
 		VideoSupported:     true, // Default to true, can be refined based on model
 		CountryCodes:       countryCodes,
+		RequestHost:        host,
+		RequestPort:        port,
 	}
 
 	if cfg != nil {
@@ -38,6 +42,14 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("render root", "error", err)
 		h.writeError(w, http.StatusInternalServerError, "rendering failed")
 	}
+}
+
+func requestHostPort(r *http.Request) (host, port string) {
+	h, p, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		return r.Host, ""
+	}
+	return h, p
 }
 
 // Health is a lightweight liveness endpoint.

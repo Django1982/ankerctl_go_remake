@@ -29,6 +29,10 @@ type TemplateData struct {
 	VideoProfiles       []VideoProfile
 	VideoProfileDefault string
 
+	// Request context (used in instructions tab)
+	RequestHost string
+	RequestPort string
+
 	// Setup specific
 	ConfigExistingEmail string
 	CountryCodes        string
