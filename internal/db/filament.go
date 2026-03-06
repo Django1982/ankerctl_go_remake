@@ -224,18 +224,23 @@ func migrateFilaments(db *sql.DB, log *slog.Logger) error {
 		return fmt.Errorf("create filaments table: %w", err)
 	}
 
-	// Handle legacy column renames (SQLite 3.25+). Errors are non-fatal
-	// because the column may already have the new name or the rename
-	// may not be supported by an older SQLite version.
+	// Handle legacy column renames (SQLite 3.25+). Only attempted when the
+	// old column actually exists — avoids spurious log output on fresh DBs.
+	existingAtCreate, err := tableColumns(db, "filaments")
+	if err != nil {
+		return fmt.Errorf("read filaments columns (pre-rename): %w", err)
+	}
 	legacyRenames := [][2]string{
 		{"nozzle_temp", "nozzle_temp_other_layer"},
 		{"bed_temp", "bed_temp_other_layer"},
 	}
 	for _, pair := range legacyRenames {
+		if _, ok := existingAtCreate[pair[0]]; !ok {
+			continue // old column not present, nothing to rename
+		}
 		stmt := fmt.Sprintf("ALTER TABLE filaments RENAME COLUMN %s TO %s", pair[0], pair[1])
 		if _, err := db.Exec(stmt); err != nil {
-			// Not an error: column either doesn't exist or was already renamed.
-			log.Debug("filament migration: rename skipped", "old", pair[0], "new", pair[1], "reason", err)
+			log.Warn("filament migration: rename failed", "old", pair[0], "new", pair[1], "err", err)
 		} else {
 			log.Info("filament migration: renamed column", "old", pair[0], "new", pair[1])
 		}

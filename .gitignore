@@ -1,6 +1,6 @@
-# Binaries
-ankerctl
-ankerctl.exe
+# Binaries (root-level only, not cmd/ankerctl/ directory)
+/ankerctl
+/ankerctl.exe
 *.exe
 *.exe~
 *.dll

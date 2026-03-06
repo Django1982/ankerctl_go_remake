@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,6 +81,25 @@ func WithHost(host string) Option {
 func WithPort(port int) Option {
 	return func(s *Server) {
 		s.port = port
+		s.portSet = true
+	}
+}
+
+// WithListen parses a "host:port" address and sets both host and port.
+// Invalid addresses are silently ignored (env vars / defaults apply).
+func WithListen(addr string) Option {
+	return func(s *Server) {
+		host, portStr, err := net.SplitHostPort(addr)
+		if err != nil {
+			return
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 {
+			return
+		}
+		s.host = host
+		s.port = port
+		s.hostSet = true
 		s.portSet = true
 	}
 }

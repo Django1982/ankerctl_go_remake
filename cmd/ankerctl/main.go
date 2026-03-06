@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	configDir  string
-	devMode    bool
-	printerIdx int
+	configDir    string
+	devMode      bool
+	printerIdx   int
+	serverListen string
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 
 	webCmd := newWebserverCmd()
 	webCmd.Flags().IntVar(&printerIdx, "printer-index", 0, "Index of the printer to monitor (0-based)")
+	webCmd.Flags().StringVar(&serverListen, "listen", "", "Listen address, e.g. 0.0.0.0:4470 (env: ANKERCTL_HOST / ANKERCTL_PORT)")
 	rootCmd.AddCommand(webCmd)
 
 	rootCmd.AddCommand(newConfigCmd())
@@ -118,11 +120,15 @@ func runWebserver() error {
 	sm.Register(ft)
 
 	// 5. Web Server
-	srv := web.NewServer(cfgMgr,
+	webOpts := []web.Option{
 		web.WithDatabase(database),
 		web.WithServiceManager(sm),
 		web.WithDevMode(devMode),
-	)
+	}
+	if serverListen != "" {
+		webOpts = append(webOpts, web.WithListen(serverListen))
+	}
+	srv := web.NewServer(cfgMgr, webOpts...)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
