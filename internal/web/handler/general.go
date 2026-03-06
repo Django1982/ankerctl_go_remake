@@ -17,6 +17,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		Configure:          cfg != nil && cfg.IsConfigured(),
 		DebugMode:          h.devMode,
 		VideoSupported:     true, // Default to true, can be refined based on model
+		CountryCodes:       countryCodes,
 	}
 
 	if cfg != nil {
