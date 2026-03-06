@@ -87,6 +87,16 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int) ppppClie
 				return nil, fmt.Errorf("ppppservice: discover printer ip: %w", err)
 			}
 			host = ip.String()
+			slog.Info("ppppservice: discovered printer IP via LAN broadcast", "ip", host, "duid", printer.P2PDUID)
+			// Persist the discovered IP so future restarts skip the broadcast.
+			if saved, saveErr := cfgMgr.Load(); saveErr == nil && saved != nil {
+				if printerIndex < len(saved.Printers) && saved.Printers[printerIndex].IPAddr == "" {
+					saved.Printers[printerIndex].IPAddr = host
+					if saveErr := cfgMgr.Save(saved); saveErr != nil {
+						slog.Warn("ppppservice: could not persist discovered IP", "error", saveErr)
+					}
+				}
+			}
 		}
 
 		cli, err := ppppclient.OpenLAN(duid, host)
