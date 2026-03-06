@@ -119,7 +119,7 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("cloud login successful", "email", email, "region", region)
-	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "region": region})
+	h.writeJSON(w, http.StatusOK, map[string]string{"redirect": "/api/ankerctl/server/reload"})
 }
 
 // buildConfigFromLogin constructs a Config from login and FDM list responses.
@@ -168,12 +168,12 @@ func stringVal(m map[string]any, key string) string {
 	return v
 }
 
-// ServerReload restarts all registered services.
-func (h *Handler) ServerReload(w http.ResponseWriter, _ *http.Request) {
+// ServerReload restarts all registered services and redirects to root.
+func (h *Handler) ServerReload(w http.ResponseWriter, r *http.Request) {
 	if h.svc != nil {
 		h.svc.RestartAll()
 	}
-	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // UploadRateUpdate updates config.upload_rate_mbps.
