@@ -15,6 +15,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	h := handler.New(s.config, s.database, s.services, s.logger, s.devMode, rf)
+	h.WithStateReloader(s)
 
 	// Static files
 	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))

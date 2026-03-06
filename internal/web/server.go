@@ -247,6 +247,34 @@ func (s *Server) VideoSupported() bool {
 	return s.videoSupported
 }
 
+// ReloadState re-reads the config from disk and updates login/printer state.
+// Called after login or logout so WebSocket handlers see the current state
+// without requiring a full process restart.
+func (s *Server) ReloadState() {
+	if s.config == nil {
+		return
+	}
+	cfg, err := s.config.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil || cfg == nil || !cfg.IsConfigured() {
+		s.login = false
+		s.unsupportedDevice = false
+		s.videoSupported = false
+		return
+	}
+	s.login = true
+	if !s.printerIndexLocked {
+		s.printerIndex = cfg.ActivePrinterIndex
+	}
+	if p := printerAtIndex(cfg, s.printerIndex); p != nil {
+		unsupported := makeModelSet(defaultUnsupportedPrinters, os.Getenv("ANKERCTL_UNSUPPORTED_PRINTERS"))
+		noCamera := makeModelSet(defaultPrintersWithoutCamera, os.Getenv("ANKERCTL_PRINTERS_WITHOUT_CAMERA"))
+		s.unsupportedDevice = modelInSet(p.Model, unsupported)
+		s.videoSupported = !modelInSet(p.Model, noCamera)
+	}
+}
+
 // SessionManager returns the session manager used by auth middleware.
 func (s *Server) SessionManager() *mw.SessionManager {
 	s.mu.RLock()

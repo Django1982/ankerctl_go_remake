@@ -58,14 +58,21 @@ type VideoProfile struct {
 // RenderFunc is the function signature for template rendering.
 type RenderFunc func(w http.ResponseWriter, name string, data any) error
 
+// StateReloader is implemented by the Server to refresh in-memory login state
+// from disk after a login or logout without a full process restart.
+type StateReloader interface {
+	ReloadState()
+}
+
 // Handler bundles shared dependencies used by HTTP handlers.
 type Handler struct {
-	cfg     *config.Manager
-	db      *db.DB
-	svc     *service.ServiceManager
-	log     *slog.Logger
-	devMode bool
-	render  RenderFunc
+	cfg           *config.Manager
+	db            *db.DB
+	svc           *service.ServiceManager
+	log           *slog.Logger
+	devMode       bool
+	render        RenderFunc
+	stateReloader StateReloader
 }
 
 // New creates a handler bundle.
@@ -74,6 +81,11 @@ func New(cfg *config.Manager, database *db.DB, svc *service.ServiceManager, log 
 		log = slog.Default()
 	}
 	return &Handler{cfg: cfg, db: database, svc: svc, log: log, devMode: devMode, render: render}
+}
+
+// WithStateReloader sets the StateReloader used by ServerReload and ConfigLogout.
+func (h *Handler) WithStateReloader(r StateReloader) {
+	h.stateReloader = r
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload any) {

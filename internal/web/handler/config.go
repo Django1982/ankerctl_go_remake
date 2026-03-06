@@ -328,6 +328,9 @@ func (h *Handler) ConfigLogout(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "logout failed: "+err.Error())
 		return
 	}
+	if h.stateReloader != nil {
+		h.stateReloader.ReloadState()
+	}
 	if h.svc != nil {
 		h.svc.RestartAll()
 	}
@@ -336,6 +339,9 @@ func (h *Handler) ConfigLogout(w http.ResponseWriter, r *http.Request) {
 
 // ServerReload restarts all registered services and redirects to root.
 func (h *Handler) ServerReload(w http.ResponseWriter, r *http.Request) {
+	if h.stateReloader != nil {
+		h.stateReloader.ReloadState()
+	}
 	if h.svc != nil {
 		h.svc.RestartAll()
 	}
