@@ -110,22 +110,24 @@
                                                 </div>
 
                                                 <div class="col-md-3 justify-content-end d-flex gap-2">
-                                                    <button class="btn btn-secondary submit" type="submit" id="login">
-                                                        <i class="bi-box-arrow-in-right px-1"></i>Fetch
+                                                    <button class="btn btn-secondary submit text-nowrap" type="submit" id="login">
+                                                        <i class="bi-box-arrow-in-right"></i> Fetch
                                                     </button>
                                                     {{if .Configure}}
-                                                    <form action="/api/ankerctl/config/logout" method="POST"
-                                                        onsubmit="return confirm('Remove saved credentials and log out?')">
-                                                        <button class="btn btn-outline-danger" type="submit">
-                                                            <i class="bi-box-arrow-right px-1"></i>Logout
-                                                        </button>
-                                                    </form>
+                                                    <button class="btn btn-outline-danger text-nowrap" type="submit"
+                                                        form="logout-form">
+                                                        <i class="bi-box-arrow-right"></i> Logout
+                                                    </button>
                                                     {{end}}
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
                                 </form>
+                                {{if .Configure}}
+                                <form id="logout-form" action="/api/ankerctl/config/logout" method="POST"
+                                    onsubmit="return confirm('Remove saved credentials and log out?')"></form>
+                                {{end}}
                                 <form action="/api/ankerctl/config/upload" method="POST"
                                     enctype="multipart/form-data" class="mb-3" id="config-upload-form">
                                     <div class="card">
