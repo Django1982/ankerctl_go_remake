@@ -12,13 +12,21 @@
                     <li class="list-group-item">Under "Host Type" select "OctoPrint"</li>
                     <li class="list-group-item">In "Hostname, IP or URL" fill in with:
                         <kbd id="octoPrintHost">{{.request_host}}:{{.request_port}}</kbd>
-                        {{.macro.clipboard_button("#octoPrintHost")}}
+                        <button
+                            class="btn btn-secondary btn-sm"
+                            type="button"
+                            data-bs-toggle="tooltip"
+                            data-bs-placement="top"
+                            data-clipboard-src="#octoPrintHost"
+                            title="Copy to Clipboard">
+                            <i class="bi-clipboard-plus"></i>
+                        </button>
                     </li>
                     <li class="list-group-item">Leave "API Key / Password" blank</li>
                     <li class="list-group-item">Click "Test" to validate input</li>
                     <li class="list-group-item">Click "Ok" to close the window</li>
                     <li class="list-group-item">Slice your file as normal</li>
-                    <li class="list-group-item">Click "G{{- macro.bi_icon("caret-right-fill") -}}" button to start
+                    <li class="list-group-item">Click "G<i class="bi-caret-right-fill"></i>" button to start
                         direct upload to the printer</li>
                     <li class="list-group-item">Click "Upload and print" - the "Upload"-only is not supported</li>
 

@@ -39,7 +39,6 @@ func newTemplates() (*Templates, error) {
 		"static/base.html",
 		"static/footer.html",
 		"static/index.html",
-		"static/macro.html",
 		"static/tabs/debug.html",
 		"static/tabs/filaments.html",
 		"static/tabs/gcode.html",
