@@ -142,6 +142,55 @@ func TestNormalizeProgressFromMQTTScale(t *testing.T) {
 	}
 }
 
+func TestExtractProgress(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload map[string]any
+		want    int
+		ok      bool
+	}{
+		{
+			name:    "top level progress",
+			payload: map[string]any{"progress": 42},
+			want:    42,
+			ok:      true,
+		},
+		{
+			name:    "top level progress variant",
+			payload: map[string]any{"printProgress": 73},
+			want:    73,
+			ok:      true,
+		},
+		{
+			name:    "nested progress",
+			payload: map[string]any{"job": map[string]any{"progress": 88}},
+			want:    88,
+			ok:      true,
+		},
+		{
+			name:    "ignores non numeric variant before nested exact progress",
+			payload: map[string]any{"progressState": "unknown", "job": map[string]any{"progress": 19}},
+			want:    19,
+			ok:      true,
+		},
+		{
+			name:    "missing progress",
+			payload: map[string]any{"value": 1},
+			ok:      false,
+		},
+	}
+
+	for _, tc := range tests {
+		got, ok := extractProgress(tc.payload)
+		if ok != tc.ok {
+			t.Fatalf("%s: ok=%v, want %v", tc.name, ok, tc.ok)
+		}
+		if got != tc.want {
+			t.Fatalf("%s: progress=%d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestMqttQueueSendGCode_SplitsLinesAndCmdLen(t *testing.T) {
 	client := &fakeMQTTClient{}
 	q := &MqttQueue{client: client}

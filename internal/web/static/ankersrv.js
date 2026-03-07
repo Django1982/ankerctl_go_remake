@@ -53,13 +53,25 @@ $(function () {
     }
 
     /**
-     * Calculate the percentage between two numbers
-     * @param {number} layer
-     * @param {number} total
+     * Normalizes printer progress values across 0-1, 0-100 and 0-10000 scales.
+     * @param {number} progress
      * @returns {number} percentage
      */
     function getPercentage(progress) {
-        return Math.round(progress);
+        const value = Number(progress);
+        if (!Number.isFinite(value) || value < 0) {
+            return 0;
+        }
+        if (value <= 1 && !Number.isInteger(value)) {
+            return Math.round(value * 100);
+        }
+        if (value <= 100) {
+            return Math.round(value);
+        }
+        if (value <= 10000) {
+            return Math.round(value / 100);
+        }
+        return 100;
     }
 
     /**
@@ -308,7 +320,7 @@ $(function () {
                     $("#time-elapsed").text(getTime(data.totalTime));
                 }
                 if (data.progress !== undefined) {
-                    const progress = Math.min(100, Math.round(data.progress / 100));
+                    const progress = Math.min(100, getPercentage(data.progress));
                     $("#progressbar").attr("aria-valuenow", progress);
                     $("#progressbar").attr("style", `width: ${progress}%`);
                     $("#progress").text(`${progress}%`);

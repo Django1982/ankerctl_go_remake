@@ -607,8 +607,10 @@ func extractProgress(payload map[string]any) (int, bool) {
 		return v, true
 	}
 	for k, v := range payload {
-		if k == "progress" {
-			continue
+		if strings.Contains(strings.ToLower(k), "progress") {
+			if progress, ok := asInt(v); ok {
+				return progress, true
+			}
 		}
 		if nested, ok := v.(map[string]any); ok {
 			if p, ok := asInt(nested["progress"]); ok {
