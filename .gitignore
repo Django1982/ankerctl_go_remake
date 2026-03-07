@@ -1,6 +1,7 @@
 # Binaries (root-level only, not cmd/ankerctl/ directory)
 /ankerctl
 /ankerctl.exe
+/find_anker
 *.exe
 *.exe~
 *.dll
