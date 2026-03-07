@@ -55,12 +55,14 @@ func (h *Handler) Video(w http.ResponseWriter, r *http.Request) {
 			select {
 			case out <- frame:
 			default:
+				// Drop when websocket writer can't keep up.
 			}
 		case []byte:
 			frame := append([]byte(nil), msg...)
 			select {
 			case out <- frame:
 			default:
+				// Drop when websocket writer can't keep up.
 			}
 		}
 	})

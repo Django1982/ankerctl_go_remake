@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,43 +208,38 @@ func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
 		return map[string]any{"error": "service manager unavailable"}
 	}
 
-	var raw struct {
-		Cmd   string          `json:"cmd"`
-		Value json.RawMessage `json:"value"`
-	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
+	var msg map[string]any
+	if err := json.Unmarshal(payload, &msg); err != nil {
 		return map[string]any{"error": "malformed json"}
 	}
+	if len(msg) == 0 {
+		return nil
+	}
 
-	switch strings.ToLower(strings.TrimSpace(raw.Cmd)) {
-	case "light":
-		var value string
-		if err := json.Unmarshal(raw.Value, &value); err != nil {
-			return map[string]any{"error": "light value must be 'on' or 'off'"}
+	if raw, ok := msg["light"]; ok {
+		on, ok := raw.(bool)
+		if !ok {
+			return map[string]any{"error": "light value must be boolean"}
 		}
-		on := strings.EqualFold(strings.TrimSpace(value), "on")
-		off := strings.EqualFold(strings.TrimSpace(value), "off")
-		if !on && !off {
-			return map[string]any{"error": "light value must be 'on' or 'off'"}
-		}
-		svc, err := h.services.Borrow("mqttqueue")
+		svc, err := h.services.Borrow("videoqueue")
 		if err != nil {
-			return map[string]any{"error": "mqttqueue unavailable"}
+			return map[string]any{"error": "videoqueue unavailable"}
 		}
-		defer h.services.Return("mqttqueue")
+		defer h.services.Return("videoqueue")
 		ls, ok := svc.(interface {
 			SetLight(context.Context, bool) error
 		})
 		if !ok {
-			return map[string]any{"error": "mqttqueue does not support light control"}
+			return map[string]any{"error": "videoqueue does not support light control"}
 		}
 		if err := ls.SetLight(context.Background(), on); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
-		return map[string]any{"cmd": "light", "value": map[bool]string{true: "on", false: "off"}[on]}
-	case "video_profile":
-		var profile string
-		if err := json.Unmarshal(raw.Value, &profile); err != nil {
+	}
+
+	if raw, ok := msg["video_profile"]; ok {
+		profile, ok := raw.(string)
+		if !ok {
 			return map[string]any{"error": "video_profile value must be sd|hd|fhd"}
 		}
 		profile = strings.ToLower(strings.TrimSpace(profile))
@@ -262,11 +258,31 @@ func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
 		if err := ps.SetProfile(profile); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
-		return map[string]any{"cmd": "video_profile", "value": profile}
-	case "video_enable":
-		var enabled bool
-		if err := json.Unmarshal(raw.Value, &enabled); err != nil {
-			return map[string]any{"error": "video_enable value must be boolean"}
+	}
+
+	if raw, ok := msg["quality"]; ok {
+		mode, err := parseIntValue(raw)
+		if err != nil {
+			return map[string]any{"error": "quality value must be int"}
+		}
+		svc, err := h.services.Borrow("videoqueue")
+		if err != nil {
+			return map[string]any{"error": "videoqueue unavailable"}
+		}
+		defer h.services.Return("videoqueue")
+		vm, ok := svc.(interface{ SetVideoMode(int) error })
+		if !ok {
+			return map[string]any{"error": "videoqueue does not support quality control"}
+		}
+		if err := vm.SetVideoMode(mode); err != nil {
+			return map[string]any{"error": err.Error()}
+		}
+	}
+
+	if raw, ok := msg["video_enabled"]; ok {
+		enabled, ok := raw.(bool)
+		if !ok {
+			return map[string]any{"error": "video_enabled value must be boolean"}
 		}
 		svc, err := h.services.Borrow("videoqueue")
 		if err != nil {
@@ -278,8 +294,26 @@ func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
 			return map[string]any{"error": "videoqueue does not support enable control"}
 		}
 		ve.SetVideoEnabled(enabled)
-		return map[string]any{"cmd": "video_enable", "value": enabled}
+	}
+
+	return nil
+}
+
+func parseIntValue(v any) (int, error) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), nil
+	case float32:
+		return int(n), nil
+	case int:
+		return n, nil
+	case int32:
+		return int(n), nil
+	case int64:
+		return int(n), nil
+	case string:
+		return strconv.Atoi(strings.TrimSpace(n))
 	default:
-		return map[string]any{"error": "unsupported command"}
+		return 0, strconv.ErrSyntax
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,14 +156,10 @@ func (s *PPPPService) P2PCommand(ctx context.Context, subCmd protocol.P2PSubCmdT
 	}
 
 	data := map[string]any{
-		"command": int(subCmd),
+		"commandType": int(subCmd),
 	}
 	if payload != nil {
-		if m, ok := payload.(map[string]any); ok {
-			for k, v := range m {
-				data[k] = v
-			}
-		}
+		data["data"] = payload
 	}
 	jb, err := json.Marshal(data)
 	if err != nil {
@@ -179,7 +176,7 @@ func (s *PPPPService) P2PCommand(ctx context.Context, subCmd protocol.P2PSubCmdT
 		return err
 	}
 
-	_, _, err = ch.Write(xb, true)
+	_, _, err = ch.Write(xb, false)
 	return err
 }
 
@@ -223,6 +220,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 
 	// Set up temporary reply tap
 	s.handlersMu.Lock()
+	aabbPos := len(s.aabbHandlers[handlerIdx])
 	wrapper := func(aabb protocol.Aabb, data []byte) {
 		if len(data) != 1 {
 			select {
@@ -243,15 +241,16 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		default:
 		}
 	}
-	// Note: We are appending this and not removing it properly in this simple implementation
-	// For production, we should probably add a way to remove the handler or use a single persistent router.
-	// But let's assume one concurrent upload for now.
 	s.aabbHandlers[handlerIdx] = append(s.aabbHandlers[handlerIdx], wrapper)
 	s.handlersMu.Unlock()
 
 	defer func() {
 		s.handlersMu.Lock()
-		s.aabbHandlers[handlerIdx] = nil // Reset handlers for now (assumes exclusive use)
+		handlers := s.aabbHandlers[handlerIdx]
+		if aabbPos >= 0 && aabbPos < len(handlers) {
+			handlers = append(handlers[:aabbPos], handlers[aabbPos+1:]...)
+			s.aabbHandlers[handlerIdx] = handlers
+		}
 		s.handlersMu.Unlock()
 	}()
 
@@ -266,26 +265,100 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		}
 	}
 
-	// 1. Send XZYH P2P_SEND_FILE
-	uid := uuid.NewString()[:16]
-	x := protocol.Xzyh{
-		Cmd:  protocol.P2PCmdP2pSendFile,
-		Chan: 1,
-		Data: []byte(uid),
+	writeXzyh := func(ch *protocol.Channel, cmd protocol.P2PCmdType, chanID byte, data []byte) error {
+		x := protocol.Xzyh{
+			Cmd:  cmd,
+			Chan: chanID,
+			Data: data,
+		}
+		xb, err := x.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if _, _, err := ch.Write(xb, true); err != nil {
+			return err
+		}
+		return nil
 	}
-	xb, err := x.MarshalBinary()
+
+	ch0, err := cli.Channel(0)
 	if err != nil {
 		return err
 	}
-	if _, _, err := ch.Write(xb, true); err != nil {
-		return fmt.Errorf("write send_file req: %w", err)
+
+	fileUUID := strings.TrimSpace(info.MachineID)
+	if fileUUID == "" || fileUUID == "-" {
+		fileUUID = strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", ""))
+	}
+	legacyID := fileUUID
+	if len(legacyID) < 16 {
+		legacyID += strings.Repeat("0", 16-len(legacyID))
+	}
+	legacyID = legacyID[:16]
+
+	// 1. Send XZYH P2P_SEND_FILE (JSON handshake on channel 0, Python parity).
+	xzyhReplyCh := make(chan []byte, 1)
+	s.handlersMu.Lock()
+	xzyhPos := len(s.handlers[0])
+	s.handlers[0] = append(s.handlers[0], func(data []byte) {
+		select {
+		case xzyhReplyCh <- append([]byte(nil), data...):
+		default:
+		}
+	})
+	s.handlersMu.Unlock()
+	defer func() {
+		s.handlersMu.Lock()
+		handlers := s.handlers[0]
+		if xzyhPos >= 0 && xzyhPos < len(handlers) {
+			handlers = append(handlers[:xzyhPos], handlers[xzyhPos+1:]...)
+			s.handlers[0] = handlers
+		}
+		s.handlersMu.Unlock()
+	}()
+
+	jsonPayload := map[string]any{
+		"uuid":          fileUUID,
+		"device":        "ankerctl",
+		"flag":          0,
+		"random":        time.Now().UnixNano(),
+		"timeout":       40,
+		"total_timeout": 120,
+	}
+	jb, err := json.Marshal(jsonPayload)
+	if err != nil {
+		return err
+	}
+	if err := writeXzyh(ch0, protocol.P2PCmdP2pSendFile, 0, jb); err != nil {
+		return fmt.Errorf("write send_file json handshake: %w", err)
+	}
+
+	useLegacy := false
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case resp := <-xzyhReplyCh:
+		if len(resp) >= 4 {
+			code := binary.LittleEndian.Uint32(resp[:4])
+			useLegacy = code != 0
+		} else {
+			useLegacy = true
+		}
+	case <-time.After(2 * time.Second):
+		useLegacy = true
+	}
+
+	if useLegacy {
+		if err := writeXzyh(ch0, protocol.P2PCmdP2pSendFile, 0, []byte(legacyID)); err != nil {
+			return fmt.Errorf("write send_file legacy handshake: %w", err)
+		}
 	}
 
 	// 2. Prepare metadata string
 	// format: "type,name,size,md5,user_name,user_id,machine_id"
 	h := md5.Sum(payload)
 	md5Str := fmt.Sprintf("%x", h)
-	meta := fmt.Sprintf("0,%s,%d,%s,%s,%s,%s", info.Name, info.Size, md5Str, info.UserName, info.UserID, info.MachineID)
+	meta := fmt.Sprintf("0,%s,%d,%s,%s,%s,%s", info.Name, info.Size, md5Str, info.UserName, info.UserID, fileUUID)
 	metaData := append([]byte(meta), 0)
 
 	// 3. Send BEGIN
@@ -297,10 +370,6 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 	if _, _, err := ch.Write(bp, true); err != nil {
 		return fmt.Errorf("write aabb begin: %w", err)
 	}
-
-	// Wait for reply? Python says self.api_aabb_request(api, FileTransfer.DATA...)
-	// Wait, Python's send_file uses api_aabb for BEGIN (no wait), then api_aabb_request for DATA (wait).
-	// Let's just follow Python: no wait for BEGIN.
 
 	// 4. Send DATA
 	blockSize := 1024 * 32
@@ -334,7 +403,10 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		}
 	}
 
-	// 5. Send END
+	// 5. Optionally send END to trigger print start.
+	if !info.StartPrint {
+		return nil
+	}
 	endAabb := protocol.Aabb{FrameType: protocol.FileTransferEnd}
 	ep, err := endAabb.PackWithCRC([]byte{})
 	if err != nil {

@@ -695,12 +695,8 @@ func ParseVideoFrame(data []byte) (VideoFrame, error) {
 		Height:    binary.LittleEndian.Uint16(data[26:28]),
 		Format:    data[28],
 	}
-	// The actual H.264/H.265 data starts at offset 64.
-	if len(data) > 64 {
-		vf.Data = append([]byte(nil), data[64:]...)
-	} else {
-		vf.Data = nil
-	}
+	// Keep full XZYH payload in Data to match Python behaviour.
+	// Python ws/video forwards msg.data directly from XZYH (pkt[16:]).
 	return vf, nil
 }
 

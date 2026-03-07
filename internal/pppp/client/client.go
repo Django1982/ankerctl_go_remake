@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	PPPPLANPort = 32108 // UDP port for LAN discovery (LanSearch broadcast / PunchPkt)
-	PPPPPort    = 32100 // UDP port for PPPP session (file upload, camera, remote control)
+	PPPPLANPort = 32108    // UDP port for LAN discovery (LanSearch broadcast / PunchPkt)
+	PPPPPort    = 32100    // UDP port for PPPP session (file upload, camera, remote control)
 	PPPPWANPort = PPPPPort // kept for compatibility
 )
 
@@ -239,17 +239,28 @@ func (c *Client) Run(ctx context.Context) error {
 					_ = c.SendPacket(pkt, nil)
 				}
 			}
-			msg, addr, err := c.Recv(5 * time.Millisecond)
-			if err == nil {
-				c.setRemoteAddr(addr)
-				c.process(msg)
-			} else if !errors.Is(err, context.DeadlineExceeded) {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+
+			// Drain as many inbound UDP packets as available in this cycle.
+			// Reading only one datagram per 25ms tick throttles video heavily
+			// and creates multi-second/minute latency under sustained frame rate.
+			for i := 0; i < 256; i++ {
+				msg, addr, err := c.Recv(1 * time.Millisecond)
+				if err == nil {
+					c.setRemoteAddr(addr)
+					c.process(msg)
 					continue
+				}
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					break
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					break
 				}
 				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
+				// Ignore transient read/decode errors and continue loop.
+				break
 			}
 		}
 	}

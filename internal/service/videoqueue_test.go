@@ -55,6 +55,8 @@ func TestVideoQueueStallTriggersRestart(t *testing.T) {
 	q.stallTimeout = 20 * time.Millisecond
 	q.checkInterval = 5 * time.Millisecond
 	q.SetVideoEnabled(true)
+	unsub := q.Tap(func(any) {})
+	defer unsub()
 
 	if err := q.WorkerStart(); err != nil {
 		t.Fatalf("WorkerStart: %v", err)

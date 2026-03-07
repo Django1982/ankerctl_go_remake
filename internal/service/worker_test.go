@@ -114,3 +114,28 @@ func TestWorkerRestartHoldoff(t *testing.T) {
 
 	t.Fatalf("expected worker to restart at least once")
 }
+
+func TestWorkerRestartStartsLoopWhenIdle(t *testing.T) {
+	w := newTestWorker("restart-idle-worker")
+	defer w.Shutdown()
+
+	w.mu.Lock()
+	w.restartOn = 0 // no forced restart signal on first run
+	w.mu.Unlock()
+
+	w.Restart()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		w.mu.Lock()
+		started := len(w.startTimes) > 0
+		state := w.State()
+		w.mu.Unlock()
+		if started || state == StateRunning {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("expected Restart() to start idle worker loop")
+}

@@ -17,6 +17,7 @@ import (
 
 const (
 	defaultVideoStallTimeout = 15 * time.Second
+	videoFPSWindow           = 5 * time.Second
 )
 
 // VideoProfile describes a camera streaming profile.
@@ -67,6 +68,23 @@ type VideoStallEvent struct {
 	SinceLast  time.Duration
 }
 
+// VideoRuntimeStats is a lightweight runtime snapshot for debug mode.
+type VideoRuntimeStats struct {
+	Enabled           bool    `json:"enabled"`
+	Generation        uint64  `json:"generation"`
+	Profile           string  `json:"profile"`
+	FramesTotal       uint64  `json:"frames_total"`
+	InputDropped      uint64  `json:"input_dropped"`
+	FPS5s             float64 `json:"fps_5s"`
+	LastFrameAgeMS    int64   `json:"last_frame_age_ms"`
+	LastFrameSize     int     `json:"last_frame_size"`
+	FrameQueueLen     int     `json:"frame_queue_len"`
+	FrameQueueCap     int     `json:"frame_queue_cap"`
+	Consumers         int     `json:"consumers"`
+	LiveUptimeMS      int64   `json:"live_uptime_ms"`
+	ConnectedForVideo bool    `json:"connected_for_video"`
+}
+
 type ffmpegRunner func(ctx context.Context, args []string) error
 
 // VideoQueue streams H.264 frames, monitors stalls, and supports snapshots.
@@ -81,9 +99,14 @@ type VideoQueue struct {
 
 	VideoEnabledField bool
 	profileID         string
+	lightState        *bool
 	generation        uint64
 	lastFrameAt       time.Time
 	liveStartedAt     time.Time
+	frameSamples      []time.Time
+	framesTotal       uint64
+	inputDropped      uint64
+	lastFrameSize     int
 	frameCh           chan []byte
 	stallTimeout      time.Duration
 	checkInterval     time.Duration
@@ -156,12 +179,41 @@ func (q *VideoQueue) SetProfile(profileID string) error {
 	q.mu.Lock()
 	q.profileID = profile.ID
 	controller := q.controller
+	enabled := q.VideoEnabledField
 	q.mu.Unlock()
 
-	if !profile.Live || controller == nil {
+	if !enabled || !profile.Live || controller == nil {
 		return nil
 	}
 	if err := controller.SetVideoMode(context.Background(), profile.LiveMode); err != nil {
+		if isNoPPPPClientError(err) {
+			return nil
+		}
+		return fmt.Errorf("videoqueue: set video mode: %w", err)
+	}
+	return nil
+}
+
+// SetVideoMode applies a raw live mode (Python ws/ctrl "quality" compatibility).
+func (q *VideoQueue) SetVideoMode(mode int) error {
+	q.mu.Lock()
+	switch mode {
+	case VideoProfileSD.LiveMode:
+		q.profileID = VideoProfileSD.ID
+	case VideoProfileHD.LiveMode:
+		q.profileID = VideoProfileHD.ID
+	}
+	controller := q.controller
+	enabled := q.VideoEnabledField
+	q.mu.Unlock()
+
+	if !enabled || controller == nil {
+		return nil
+	}
+	if err := controller.SetVideoMode(context.Background(), mode); err != nil {
+		if isNoPPPPClientError(err) {
+			return nil
+		}
 		return fmt.Errorf("videoqueue: set video mode: %w", err)
 	}
 	return nil
@@ -173,6 +225,9 @@ func (q *VideoQueue) FeedFrame(frame []byte) {
 	select {
 	case q.frameCh <- copyFrame:
 	default:
+		q.mu.Lock()
+		q.inputDropped++
+		q.mu.Unlock()
 		// Drop oldest frame to keep stream live under backpressure.
 		select {
 		case <-q.frameCh:
@@ -194,10 +249,23 @@ func (q *VideoQueue) LastFrameAt() time.Time {
 
 // SetLight toggles the printer camera light.
 func (q *VideoQueue) SetLight(ctx context.Context, on bool) error {
-	if q.lightController == nil {
+	q.mu.Lock()
+	q.lightState = new(bool)
+	*q.lightState = on
+	lightController := q.lightController
+	enabled := q.VideoEnabledField
+	q.mu.Unlock()
+
+	if !enabled || lightController == nil {
 		return nil
 	}
-	return q.lightController.SetLight(ctx, on)
+	if err := lightController.SetLight(ctx, on); err != nil {
+		if isNoPPPPClientError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // CaptureSnapshot grabs one JPEG snapshot from the local /video endpoint.
@@ -229,6 +297,10 @@ func (q *VideoQueue) WorkerInit() {
 	defer q.mu.Unlock()
 	q.lastFrameAt = time.Time{}
 	q.liveStartedAt = time.Time{}
+	q.frameSamples = nil
+	q.framesTotal = 0
+	q.inputDropped = 0
+	q.lastFrameSize = 0
 }
 
 func (q *VideoQueue) WorkerStart() error {
@@ -239,6 +311,26 @@ func (q *VideoQueue) WorkerStart() error {
 	q.mu.RUnlock()
 	if !enabled || controller == nil {
 		return nil
+	}
+
+	// Ensure PPPP service is started and connected before issuing live/video commands.
+	type ppppLifecycle interface {
+		Start(context.Context)
+		IsConnected() bool
+		State() RunState
+	}
+	if lc, ok := controller.(ppppLifecycle); ok {
+		lc.Start(context.Background())
+		deadline := time.Now().Add(6 * time.Second)
+		for !lc.IsConnected() && time.Now().Before(deadline) {
+			if lc.State() == StateStopped {
+				return errors.New("videoqueue: ppppservice stopped during startup")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !lc.IsConnected() {
+			return errors.New("videoqueue: ppppservice connection timeout")
+		}
 	}
 
 	type videoHandlerRegistrar interface {
@@ -256,6 +348,13 @@ func (q *VideoQueue) WorkerStart() error {
 		if err := controller.StartLive(context.Background(), profile.LiveMode); err != nil {
 			return fmt.Errorf("videoqueue: start live: %w", err)
 		}
+	}
+
+	q.mu.RLock()
+	lightState := q.lightState
+	q.mu.RUnlock()
+	if lightState != nil && q.lightController != nil {
+		_ = q.lightController.SetLight(context.Background(), *lightState)
 	}
 
 	now := time.Now()
@@ -289,6 +388,17 @@ func (q *VideoQueue) WorkerRun(ctx context.Context) error {
 			now := time.Now()
 			q.mu.Lock()
 			q.lastFrameAt = now
+			q.lastFrameSize = len(frame)
+			q.framesTotal++
+			q.frameSamples = append(q.frameSamples, now)
+			cutoff := now.Add(-videoFPSWindow)
+			idx := 0
+			for idx < len(q.frameSamples) && q.frameSamples[idx].Before(cutoff) {
+				idx++
+			}
+			if idx > 0 {
+				q.frameSamples = q.frameSamples[idx:]
+			}
 			generation := q.generation
 			profileID := q.profileID
 			q.mu.Unlock()
@@ -299,7 +409,9 @@ func (q *VideoQueue) WorkerRun(ctx context.Context) error {
 			last := q.lastFrameAt
 			generation := q.generation
 			q.mu.RUnlock()
-			if now.Sub(last) > stallTimeout {
+			// Python parity: only restart stalled live stream while there are
+			// active consumers (ws/video or /video stream taps).
+			if q.hasConsumers() && now.Sub(last) > stallTimeout {
 				q.Notify(VideoStallEvent{Generation: generation, SinceLast: now.Sub(last)})
 				return ErrServiceRestartSignal
 			}
@@ -350,6 +462,89 @@ func videoLoopbackURL() string {
 		url += "&apikey=" + apiKey
 	}
 	return url
+}
+
+func isNoPPPPClientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no client")
+}
+
+func (q *VideoQueue) hasConsumers() bool {
+	q.handlersMu.RLock()
+	defer q.handlersMu.RUnlock()
+	return len(q.handlers) > 0
+}
+
+// CurrentProfile returns the currently selected profile id.
+func (q *VideoQueue) CurrentProfile() string {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.profileID
+}
+
+// RuntimeStats returns a debug snapshot of video runtime metrics.
+func (q *VideoQueue) RuntimeStats() VideoRuntimeStats {
+	now := time.Now()
+	q.mu.RLock()
+	enabled := q.VideoEnabledField
+	generation := q.generation
+	profile := q.profileID
+	framesTotal := q.framesTotal
+	inputDropped := q.inputDropped
+	lastFrameAt := q.lastFrameAt
+	lastFrameSize := q.lastFrameSize
+	sampleCount := len(q.frameSamples)
+	liveStartedAt := q.liveStartedAt
+	queueLen := len(q.frameCh)
+	queueCap := cap(q.frameCh)
+	q.mu.RUnlock()
+
+	q.handlersMu.RLock()
+	consumers := len(q.handlers)
+	q.handlersMu.RUnlock()
+
+	lastFrameAgeMS := int64(-1)
+	if !lastFrameAt.IsZero() {
+		lastFrameAgeMS = now.Sub(lastFrameAt).Milliseconds()
+	}
+
+	liveUptimeMS := int64(0)
+	if !liveStartedAt.IsZero() {
+		liveUptimeMS = now.Sub(liveStartedAt).Milliseconds()
+	}
+
+	den := videoFPSWindow.Seconds()
+	if !liveStartedAt.IsZero() {
+		elapsed := now.Sub(liveStartedAt).Seconds()
+		if elapsed > 0 && elapsed < den {
+			den = elapsed
+		}
+	}
+	if den < 1 {
+		den = 1
+	}
+	fps := float64(sampleCount) / den
+
+	return VideoRuntimeStats{
+		Enabled:        enabled,
+		Generation:     generation,
+		Profile:        profile,
+		FramesTotal:    framesTotal,
+		InputDropped:   inputDropped,
+		FPS5s:          fps,
+		LastFrameAgeMS: lastFrameAgeMS,
+		LastFrameSize:  lastFrameSize,
+		FrameQueueLen:  queueLen,
+		FrameQueueCap:  queueCap,
+		Consumers:      consumers,
+		LiveUptimeMS:   liveUptimeMS,
+		ConnectedForVideo: enabled &&
+			consumers > 0 &&
+			lastFrameAgeMS >= 0 &&
+			lastFrameAgeMS < 2000,
+	}
 }
 
 var errFFmpegUnavailable = errors.New("ffmpeg unavailable")

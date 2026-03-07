@@ -141,3 +141,44 @@ func TestNormalizeProgressFromMQTTScale(t *testing.T) {
 		}
 	}
 }
+
+func TestMqttQueueSendGCode_SplitsLinesAndCmdLen(t *testing.T) {
+	client := &fakeMQTTClient{}
+	q := &MqttQueue{client: client}
+
+	if err := q.SendGCode(context.Background(), "M104 S200\n\nG28\n"); err != nil {
+		t.Fatalf("SendGCode: %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.commands) != 2 {
+		t.Fatalf("commands=%d, want 2", len(client.commands))
+	}
+	first := client.commands[0]
+	second := client.commands[1]
+	if first["cmdData"] != "M104 S200" || first["cmdLen"] != len("M104 S200") {
+		t.Fatalf("first command mismatch: %#v", first)
+	}
+	if second["cmdData"] != "G28" || second["cmdLen"] != len("G28") {
+		t.Fatalf("second command mismatch: %#v", second)
+	}
+}
+
+func TestMqttQueueSendAutoLeveling_UsesValueZero(t *testing.T) {
+	client := &fakeMQTTClient{}
+	q := &MqttQueue{client: client}
+
+	if err := q.SendAutoLeveling(context.Background()); err != nil {
+		t.Fatalf("SendAutoLeveling: %v", err)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.commands) != 1 {
+		t.Fatalf("commands=%d, want 1", len(client.commands))
+	}
+	if got := client.commands[0]["value"]; got != 0 {
+		t.Fatalf("autolevel value=%v, want 0", got)
+	}
+}

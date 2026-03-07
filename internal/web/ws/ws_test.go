@@ -43,6 +43,7 @@ type mockService struct {
 	lightCalls  []bool
 	profileCall []string
 	enableCalls []bool
+	modeCalls   []int
 }
 
 func newMockService(name string) *mockService {
@@ -114,6 +115,13 @@ func (s *mockService) SetVideoEnabled(enabled bool) {
 func (s *mockService) SetProfile(profile string) error {
 	s.mu.Lock()
 	s.profileCall = append(s.profileCall, profile)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *mockService) SetVideoMode(mode int) error {
+	s.mu.Lock()
+	s.modeCalls = append(s.modeCalls, mode)
 	s.mu.Unlock()
 	return nil
 }
@@ -222,6 +230,7 @@ func TestMQTTHandler(t *testing.T) {
 	conn, cleanup := newWSServer(t, "/ws/mqtt", h.MQTT)
 	defer cleanup()
 
+	time.Sleep(30 * time.Millisecond)
 	mqtt.Notify(map[string]any{"commandType": 1000, "value": 1})
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, payload, err := conn.ReadMessage()
@@ -330,31 +339,26 @@ func TestCtrlHandler_AuthAndCommands(t *testing.T) {
 		}
 	}
 
-	if err := conn.WriteJSON(map[string]any{"cmd": "light", "value": "on"}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"light": true}); err != nil {
 		t.Fatalf("write light command: %v", err)
 	}
-	if err := conn.WriteJSON(map[string]any{"cmd": "video_profile", "value": "hd"}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"video_profile": "hd"}); err != nil {
 		t.Fatalf("write video_profile command: %v", err)
 	}
-	if err := conn.WriteJSON(map[string]any{"cmd": "video_enable", "value": true}); err != nil {
-		t.Fatalf("write video_enable command: %v", err)
+	if err := conn.WriteJSON(map[string]any{"video_enabled": true}); err != nil {
+		t.Fatalf("write video_enabled command: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{"quality": 1}); err != nil {
+		t.Fatalf("write quality command: %v", err)
 	}
 
-	for i := 0; i < 3; i++ {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		if _, _, err := conn.ReadMessage(); err != nil {
-			t.Fatalf("read command response %d: %v", i, err)
-		}
-	}
-
-	mqtt.mu.Lock()
-	if len(mqtt.lightCalls) == 0 || !mqtt.lightCalls[0] {
-		mqtt.mu.Unlock()
-		t.Fatalf("expected light on call")
-	}
-	mqtt.mu.Unlock()
+	time.Sleep(120 * time.Millisecond)
 
 	video.mu.Lock()
+	if len(video.lightCalls) == 0 || !video.lightCalls[0] {
+		video.mu.Unlock()
+		t.Fatalf("expected light on call")
+	}
 	if len(video.profileCall) == 0 || video.profileCall[0] != "hd" {
 		video.mu.Unlock()
 		t.Fatalf("expected profile hd call")
@@ -362,6 +366,10 @@ func TestCtrlHandler_AuthAndCommands(t *testing.T) {
 	if len(video.enableCalls) == 0 || !video.enableCalls[0] {
 		video.mu.Unlock()
 		t.Fatalf("expected video_enable true call")
+	}
+	if len(video.modeCalls) == 0 || video.modeCalls[0] != 1 {
+		video.mu.Unlock()
+		t.Fatalf("expected quality/mode 1 call")
 	}
 	video.mu.Unlock()
 }

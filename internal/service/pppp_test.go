@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"testing"
@@ -67,5 +68,48 @@ func TestPPPPService_ConnectionResetTriggersRestart(t *testing.T) {
 	err := svc.WorkerRun(context.Background())
 	if !IsServiceRestartSignal(err) {
 		t.Fatalf("WorkerRun err = %v, want ServiceRestartSignal", err)
+	}
+}
+
+func TestPPPPService_P2PCommandUsesPythonShape(t *testing.T) {
+	fake := newFakePPPPConn()
+	svc := &PPPPService{
+		BaseWorker:   NewBaseWorker("ppppservice"),
+		log:          slog.Default(),
+		client:       fake,
+		handlers:     make(map[byte][]func([]byte)),
+		aabbHandlers: make(map[byte][]func(protocol.Aabb, []byte)),
+	}
+
+	if err := svc.P2PCommand(context.Background(), protocol.P2PSubCmdLightStateSwitch, map[string]any{"open": true}); err != nil {
+		t.Fatalf("P2PCommand: %v", err)
+	}
+
+	ch, err := fake.Channel(0)
+	if err != nil {
+		t.Fatalf("Channel(0): %v", err)
+	}
+	drws := ch.Poll(time.Now())
+	if len(drws) == 0 {
+		t.Fatal("expected at least one DRW packet")
+	}
+	x, err := protocol.ParseXzyh(drws[0].Data)
+	if err != nil {
+		t.Fatalf("ParseXzyh: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(x.Data, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if payload["commandType"] != float64(protocol.P2PSubCmdLightStateSwitch) {
+		t.Fatalf("commandType=%v, want %d", payload["commandType"], protocol.P2PSubCmdLightStateSwitch)
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing nested data payload: %#v", payload)
+	}
+	if data["open"] != true {
+		t.Fatalf("data.open=%v, want true", data["open"])
 	}
 }

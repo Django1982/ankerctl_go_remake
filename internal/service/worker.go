@@ -141,6 +141,11 @@ func (w *BaseWorker) Restart() {
 	w.wanted = true
 	w.holdoffUntil = time.Now().Add(restartHoldoff)
 	w.setStateLocked(StateStopping)
+	if w.loopDone == nil {
+		w.loopCtx, w.loopCancel = context.WithCancel(context.Background())
+		w.loopDone = make(chan struct{})
+		go w.runLoop()
+	}
 	w.signalLoopLocked()
 	w.mu.Unlock()
 }

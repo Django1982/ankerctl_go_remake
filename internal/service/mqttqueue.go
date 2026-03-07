@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -424,13 +425,21 @@ func (q *MqttQueue) SendGCode(ctx context.Context, gcode string) error {
 	if c == nil {
 		return errors.New("mqttqueue: mqtt client not connected")
 	}
-	cmd := map[string]any{
-		"commandType": int(protocol.MqttCmdGcodeCommand),
-		"cmdData":     gcode,
-		"gcode":       gcode,
-	}
-	if err := c.Command(ctx, cmd); err != nil {
-		return fmt.Errorf("mqttqueue: send gcode: %w", err)
+	lines := strings.Split(gcode, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		cmd := map[string]any{
+			"commandType": int(protocol.MqttCmdGcodeCommand),
+			"cmdData":     line,
+			"cmdLen":      len(line),
+		}
+		if err := c.Command(ctx, cmd); err != nil {
+			return fmt.Errorf("mqttqueue: send gcode: %w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	return nil
 }
@@ -445,7 +454,7 @@ func (q *MqttQueue) SendAutoLeveling(ctx context.Context) error {
 	}
 	cmd := map[string]any{
 		"commandType": int(protocol.MqttCmdAutoLeveling),
-		"value":       1,
+		"value":       0,
 	}
 	if err := c.Command(ctx, cmd); err != nil {
 		return fmt.Errorf("mqttqueue: send auto-leveling: %w", err)
