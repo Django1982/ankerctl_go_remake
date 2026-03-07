@@ -262,30 +262,36 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 	fmt.Fprintln(w, "/_/   \\_\\_| \\_|_|\\_\\_____\\____| |_| |____|")
 	fmt.Fprintln(w, "ANKERCTL M5/M5C")
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "---- server ----")
 	fmt.Fprintf(w, "mode: webserver  dev=%t  printer-index=%d\n", b.DevMode, b.PrinterIndex)
 	fmt.Fprintf(w, "bind: %s\n", formatBind(host, port))
 	for _, line := range bannerAccessLines(host, port) {
 		fmt.Fprintln(w, line)
 	}
-	fmt.Fprintf(w, "config: %s  api-key: %s\n", emptyDash(b.ConfigDir), boolLabel(b.APIKeySet, "configured", "not set"))
+	fmt.Fprintf(w, "config-dir: %s\n", emptyDash(b.ConfigDir))
+	fmt.Fprintf(w, "api-key: %s\n", boolLabel(b.APIKeySet, "configured", "not set"))
 
 	cfg := b.Config
+	fmt.Fprintln(w, "---- config ----")
 	if cfg == nil || !cfg.IsConfigured() {
 		fmt.Fprintln(w, "state: not configured")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "---- runtime log ----")
 		fmt.Fprintln(w)
 		return
 	}
 
-	fmt.Fprintf(w, "state: configured  printers=%d  db=%s\n", len(cfg.Printers), emptyDash(b.DBPath))
+	fmt.Fprintf(w, "state: configured  printers=%d\n", len(cfg.Printers))
+	fmt.Fprintf(w, "db: %s\n", emptyDash(b.DBPath))
 	if b.DevMode && cfg.Account != nil {
 		fmt.Fprintf(
 			w,
-			"account: region=%s  country=%s  email=%s  user=%s  token=%s\n",
+			"account: region=%s  country=%s  email=%s  user=%s  token=%t\n",
 			emptyDash(cfg.Account.Region),
 			emptyDash(cfg.Account.Country),
 			redactEmail(cfg.Account.Email),
-			redactValue(cfg.Account.UserID, 0, 4),
-			redactedLength(cfg.Account.AuthToken),
+			shortRedaction(cfg.Account.UserID, 4),
+			strings.TrimSpace(cfg.Account.AuthToken) != "",
 		)
 	}
 	for i, p := range cfg.Printers {
@@ -308,10 +314,12 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 				w,
 				"           p2p_duid=%s  mqtt_key=%s\n",
 				shortRedaction(p.P2PDUID, 6),
-				redactedBytesLength(p.MQTTKey),
+				boolLabel(len(p.MQTTKey) > 0, "set", "not set"),
 			)
 		}
 	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "---- runtime log ----")
 	fmt.Fprintln(w)
 }
 
@@ -398,20 +406,6 @@ func redactValue(value string, keepStart, keepEnd int) string {
 		return strings.Repeat("*", len(runes))
 	}
 	return string(runes[:keepStart]) + strings.Repeat("*", len(runes)-keepStart-keepEnd) + string(runes[len(runes)-keepEnd:])
-}
-
-func redactedLength(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "not set"
-	}
-	return fmt.Sprintf("[REDACTED len=%d]", len(value))
-}
-
-func redactedBytesLength(value []byte) string {
-	if len(value) == 0 {
-		return "not set"
-	}
-	return fmt.Sprintf("[REDACTED len=%d]", len(value))
 }
 
 func shortRedaction(value string, keepEnd int) string {
