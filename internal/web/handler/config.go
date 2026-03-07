@@ -113,6 +113,24 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Step 2b: Fetch the account profile so persisted account data matches the
+	// Python importer. In particular, country is sourced from profile.country.code.
+	profileCountry := strings.ToUpper(strings.TrimSpace(country))
+	profileCfg := httpapi.ClientConfig{
+		Region:    region,
+		AuthToken: authToken,
+		UserID:    userID,
+	}
+	if passportV1, err := httpapi.NewPassportV1(profileCfg); err == nil {
+		if profileData, err := passportV1.Profile(ctx); err == nil {
+			applyProfileFallbacks(loginMap, profileData, profileCountry)
+		} else {
+			loginMap["country"] = profileCountry
+		}
+	} else {
+		loginMap["country"] = profileCountry
+	}
+
 	// Step 3: Fetch printer list.
 	appCfg := httpapi.ClientConfig{
 		Region:    region,
@@ -264,12 +282,44 @@ func parseDSKKeys(data any) map[string]string {
 	return result
 }
 
+func applyProfileFallbacks(loginMap map[string]any, profileData any, fallbackCountry string) {
+	if loginMap == nil {
+		return
+	}
+	if profile, ok := profileData.(map[string]any); ok {
+		if email := stringVal(profile, "email"); email != "" && stringVal(loginMap, "email") == "" {
+			loginMap["email"] = email
+		}
+		if userID := stringVal(profile, "user_id"); userID != "" && stringVal(loginMap, "user_id") == "" {
+			loginMap["user_id"] = userID
+		}
+		if countryCode := profileCountryCode(profile); countryCode != "" {
+			loginMap["country"] = countryCode
+			return
+		}
+	}
+	if fallbackCountry != "" {
+		loginMap["country"] = strings.ToUpper(strings.TrimSpace(fallbackCountry))
+	}
+}
+
+func profileCountryCode(profile map[string]any) string {
+	if profile == nil {
+		return ""
+	}
+	if country := stringVal(profile, "country"); country != "" {
+		return strings.ToUpper(strings.TrimSpace(country))
+	}
+	countryMap, _ := profile["country"].(map[string]any)
+	return strings.ToUpper(strings.TrimSpace(stringVal(countryMap, "code")))
+}
+
 // buildConfigFromLogin constructs a Config from login and FDM list responses.
 func buildConfigFromLogin(loginMap map[string]any, fdmData any, region string) *model.Config {
 	authToken, _ := loginMap["auth_token"].(string)
 	userID, _ := loginMap["user_id"].(string)
 	email, _ := loginMap["email"].(string)
-	country, _ := loginMap["country"].(string)
+	country := strings.ToUpper(strings.TrimSpace(stringVal(loginMap, "country")))
 
 	cfg := &model.Config{}
 	cfg.Account = &model.Account{

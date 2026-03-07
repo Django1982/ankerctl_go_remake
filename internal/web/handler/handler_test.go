@@ -14,6 +14,45 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func TestProfileCountryCode(t *testing.T) {
+	got := profileCountryCode(map[string]any{
+		"country": map[string]any{"code": "de"},
+	})
+	if got != "DE" {
+		t.Fatalf("profileCountryCode() = %q, want DE", got)
+	}
+}
+
+func TestApplyProfileFallbacksUsesProfileCountry(t *testing.T) {
+	loginMap := map[string]any{
+		"auth_token": "tok",
+		"user_id":    "u1",
+		"email":      "user@example.com",
+	}
+	profile := map[string]any{
+		"country": map[string]any{"code": "de"},
+	}
+
+	applyProfileFallbacks(loginMap, profile, "US")
+
+	if got := stringVal(loginMap, "country"); got != "DE" {
+		t.Fatalf("country = %q, want DE", got)
+	}
+}
+
+func TestApplyProfileFallbacksFallsBackToFormCountry(t *testing.T) {
+	loginMap := map[string]any{
+		"auth_token": "tok",
+		"user_id":    "u1",
+	}
+
+	applyProfileFallbacks(loginMap, map[string]any{}, "de")
+
+	if got := stringVal(loginMap, "country"); got != "DE" {
+		t.Fatalf("country = %q, want DE", got)
+	}
+}
+
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	cfgDir := t.TempDir()
