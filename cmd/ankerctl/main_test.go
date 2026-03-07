@@ -99,10 +99,12 @@ func TestEmitStartupBannerCompactOutput(t *testing.T) {
 	})
 	out := buf.String()
 	for _, want := range []string{
-		"ANKERCTL M5/M5C",
+		"The solution for the",
 		"bind: 0.0.0.0:4471",
 		"local:   http://127.0.0.1:4471/",
 		"exposed: all IPv4 interfaces",
+		"---- server ----",
+		"---- runtime log ----",
 		"state: not configured",
 	} {
 		if !strings.Contains(out, want) {

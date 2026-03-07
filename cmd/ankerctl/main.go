@@ -255,12 +255,19 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 		port = web.DefaultPort
 	}
 
-	fmt.Fprintln(w, "   _   _   _ _  _______ ____ _____ _    ")
-	fmt.Fprintln(w, "  /_\\ | \\ | | |/ / ____/ ___|_   _| |   ")
-	fmt.Fprintln(w, " / _ \\|  \\| | ' /|  _|| |     | | | |   ")
-	fmt.Fprintln(w, "/ ___ \\ |\\  | . \\| |__| |___  | | | |___")
-	fmt.Fprintln(w, "/_/   \\_\\_| \\_|_|\\_\\_____\\____| |_| |____|")
-	fmt.Fprintln(w, "ANKERCTL M5/M5C")
+	fmt.Fprintln(w, "####################################################################################")
+	fmt.Fprintln(w, "##     .d8b.  d8b   db db   dD d88888b d8888b.  .o88b. d888888b d8888b. db        ##")
+	fmt.Fprintln(w, "##    d8' `8b 888o  88 88 ,8P' 88'     88  `8D d8P  Y8 `~~88~~' 88  `8D 88        ##")
+	fmt.Fprintln(w, "##    88ooo88 88V8o 88 88,8P   88ooooo 88oobY' 8P         88    88oobY' 88        ##")
+	fmt.Fprintln(w, "##    88~~~88 88 V8o88 88`8b   88~~~~~ 88`8b   8b         88    88`8b   88        ##")
+	fmt.Fprintln(w, "##    88   88 88  V888 88 `88. 88.     88 `88. Y8b  d8    88    88 `88. 88booo.   ##")
+	fmt.Fprintln(w, "##    YP   YP VP   V8P YP   YD Y88888P 88   YD  `Y88P'    YP    88   YD Y88888P   ##")
+	fmt.Fprintln(w, "####################################################################################")
+	fmt.Fprintln(w, "##                           The solution for the                                 ##")
+	fmt.Fprintln(w, "##                                 Slicer                                         ##")
+	fmt.Fprintln(w, "##                                  YOU                                           ##")
+	fmt.Fprintln(w, "##                                 choose                                         ##")
+	fmt.Fprintln(w, "####################################################################################")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "---- server ----")
 	fmt.Fprintf(w, "mode: webserver  dev=%t  printer-index=%d\n", b.DevMode, b.PrinterIndex)
@@ -286,12 +293,16 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 	if b.DevMode && cfg.Account != nil {
 		fmt.Fprintf(
 			w,
-			"account: region=%s  country=%s  email=%s  user=%s  token=%t\n",
+			"account: region=%s  country=%s  token=%s\n",
 			emptyDash(cfg.Account.Region),
-			emptyDash(cfg.Account.Country),
+			emptyLabel(cfg.Account.Country, "unset"),
+			boolLabel(strings.TrimSpace(cfg.Account.AuthToken) != "", "set", "not set"),
+		)
+		fmt.Fprintf(
+			w,
+			"         email=%s  user=%s\n",
 			redactEmail(cfg.Account.Email),
 			shortRedaction(cfg.Account.UserID, 4),
-			strings.TrimSpace(cfg.Account.AuthToken) != "",
 		)
 	}
 	for i, p := range cfg.Printers {
@@ -426,6 +437,13 @@ func shortRedaction(value string, keepEnd int) string {
 func emptyDash(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "-"
+	}
+	return value
+}
+
+func emptyLabel(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
 	}
 	return value
 }
