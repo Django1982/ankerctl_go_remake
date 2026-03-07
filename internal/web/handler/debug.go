@@ -210,6 +210,20 @@ func (h *Handler) DebugServices(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]any{"services": result})
 }
 
+// DebugVideoStats returns live video runtime metrics (dev mode only).
+func (h *Handler) DebugVideoStats(w http.ResponseWriter, _ *http.Request) {
+	if !h.devMode {
+		h.writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	vq, ok := h.videoQueue()
+	if !ok {
+		h.writeError(w, http.StatusServiceUnavailable, "videoqueue unavailable")
+		return
+	}
+	h.writeJSON(w, http.StatusOK, vq.RuntimeStats())
+}
+
 // DebugServiceRestart triggers async restart for a named service.
 func (h *Handler) DebugServiceRestart(w http.ResponseWriter, r *http.Request) {
 	if !h.devMode {

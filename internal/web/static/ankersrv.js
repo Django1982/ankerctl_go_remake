@@ -2299,6 +2299,41 @@ $(function () {
             }
         }
 
+        function fmtDurationMs(ms) {
+            if (ms === null || ms === undefined || ms < 0) return "-";
+            if (ms < 1000) return `${ms} ms`;
+            const s = ms / 1000;
+            if (s < 60) return `${s.toFixed(1)} s`;
+            const m = s / 60;
+            return `${m.toFixed(1)} min`;
+        }
+
+        function dbgRenderVideoStats(stats) {
+            const box = document.getElementById("dbg-video-stats");
+            if (!box) return;
+            if (!stats || typeof stats !== "object") {
+                box.innerHTML = '<span class="text-muted small">Unavailable</span>';
+                return;
+            }
+            const healthy = !!stats.connected_for_video;
+            const healthClass = healthy ? "text-success" : "text-warning";
+            box.innerHTML = `
+                <div class="row g-2 small">
+                    <div class="col-md-4"><span class="text-muted">Status:</span> <span class="${healthClass} fw-semibold">${healthy ? "flowing" : "degraded"}</span></div>
+                    <div class="col-md-4"><span class="text-muted">Enabled:</span> <code>${String(stats.enabled)}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Profile:</span> <code>${escapeHtml(String(stats.profile || "-"))}</code></div>
+                    <div class="col-md-4"><span class="text-muted">FPS (5s):</span> <code>${Number(stats.fps_5s || 0).toFixed(1)}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Frame Age:</span> <code>${fmtDurationMs(stats.last_frame_age_ms)}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Last Frame:</span> <code>${stats.last_frame_size || 0} B</code></div>
+                    <div class="col-md-4"><span class="text-muted">Queue:</span> <code>${stats.frame_queue_len || 0}/${stats.frame_queue_cap || 0}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Drops:</span> <code>${stats.input_dropped || 0}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Consumers:</span> <code>${stats.consumers || 0}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Frames Total:</span> <code>${stats.frames_total || 0}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Generation:</span> <code>${stats.generation || 0}</code></div>
+                    <div class="col-md-4"><span class="text-muted">Live Uptime:</span> <code>${fmtDurationMs(stats.live_uptime_ms)}</code></div>
+                </div>`;
+        }
+
         async function dbgRefreshServices() {
             try {
                 const resp = await fetch("/api/debug/services");
@@ -2319,6 +2354,17 @@ $(function () {
                         isPrinting = !!(stateData.print && stateData.print.active);
                     }
                 } catch (_) { /* ignore */ }
+
+                try {
+                    const vResp = await fetch("/api/debug/video/stats");
+                    if (vResp.ok) {
+                        dbgRenderVideoStats(await vResp.json());
+                    } else {
+                        dbgRenderVideoStats(null);
+                    }
+                } catch (_) {
+                    dbgRenderVideoStats(null);
+                }
 
                 Object.entries(data.services).forEach(([name, svc]) => {
                     const badgeClass = serviceStateClass(svc.state);
@@ -2970,4 +3016,3 @@ $(function () {
     });
 
 });
-

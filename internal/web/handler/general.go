@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/django1982/ankerctl/internal/model"
 )
@@ -175,6 +176,7 @@ func (h *Handler) Snapshot(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("snapshot failed: %v", err))
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename=ankerctl_snapshot.jpg")
+	ts := time.Now().Format("20060102_150405")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=ankerctl_snapshot_%s.jpg", ts))
 	http.ServeFile(w, r, path)
 }

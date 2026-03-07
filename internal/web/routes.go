@@ -90,6 +90,7 @@ func (s *Server) registerRoutes() {
 		r.Get("/api/debug/logs", h.DebugLogsList)
 		r.Get("/api/debug/logs/{filename}", h.DebugLogsContent)
 		r.Get("/api/debug/services", h.DebugServices)
+		r.Get("/api/debug/video/stats", h.DebugVideoStats)
 		r.Post("/api/debug/services/{name}/restart", h.DebugServiceRestart)
 		r.Post("/api/debug/services/{name}/test", h.DebugServiceTest)
 		r.Post("/api/debug/pppp/discover", h.DiscoverPrinterIP)
