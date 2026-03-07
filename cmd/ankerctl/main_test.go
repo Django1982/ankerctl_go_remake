@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
 
 func TestParseListen(t *testing.T) {
 	host, port, ok := parseListen("0.0.0.0:4470")
@@ -28,7 +32,7 @@ func TestResolvedListenHostPrefersCLI(t *testing.T) {
 }
 
 func TestRedactEmail(t *testing.T) {
-	if got := redactEmail("daniel@example.com"); got != "d*****@e**********" {
+	if got := redactEmail("daniel@example.com"); got != "...l@...m" {
 		t.Fatalf("redactEmail() = %q", got)
 	}
 }
@@ -39,6 +43,12 @@ func TestRedactValue(t *testing.T) {
 	}
 }
 
+func TestShortRedaction(t *testing.T) {
+	if got := shortRedaction("SN123456789", 4); got != "...6789" {
+		t.Fatalf("shortRedaction() = %q", got)
+	}
+}
+
 func TestHasAPIKeyFromEnv(t *testing.T) {
 	t.Setenv("ANKERCTL_API_KEY", "test-api-key-123456")
 	if !hasAPIKey(nil) {
@@ -46,10 +56,58 @@ func TestHasAPIKeyFromEnv(t *testing.T) {
 	}
 }
 
-func TestBannerURLsFixedHost(t *testing.T) {
-	got := bannerURLs("127.0.0.1", 4470)
-	if len(got) != 1 || got[0] != "http://127.0.0.1:4470/" {
-		t.Fatalf("bannerURLs() = %#v", got)
+func TestBannerAccessLinesFixedHost(t *testing.T) {
+	got := bannerAccessLines("127.0.0.1", 4470)
+	if len(got) != 1 || got[0] != "local:   http://127.0.0.1:4470/" {
+		t.Fatalf("bannerAccessLines() = %#v", got)
+	}
+}
+
+func TestBannerAccessLinesIPv4Wildcard(t *testing.T) {
+	got := bannerAccessLines("0.0.0.0", 4471)
+	if len(got) != 2 {
+		t.Fatalf("bannerAccessLines() len = %d, want 2", len(got))
+	}
+	if got[0] != "local:   http://127.0.0.1:4471/" {
+		t.Fatalf("bannerAccessLines()[0] = %q", got[0])
+	}
+	if got[1] != "exposed: all IPv4 interfaces" {
+		t.Fatalf("bannerAccessLines()[1] = %q", got[1])
+	}
+}
+
+func TestBannerAccessLinesIPv6Wildcard(t *testing.T) {
+	got := bannerAccessLines("::", 4471)
+	if len(got) != 3 {
+		t.Fatalf("bannerAccessLines() len = %d, want 3", len(got))
+	}
+	if got[2] != "exposed: all IPv6 interfaces" {
+		t.Fatalf("bannerAccessLines()[2] = %q", got[2])
+	}
+}
+
+func TestEmitStartupBannerCompactOutput(t *testing.T) {
+	var buf bytes.Buffer
+	emitStartupBanner(&buf, startupBanner{
+		ConfigDir:    "/tmp/cfg",
+		DBPath:       "/tmp/cfg/ankerctl.db",
+		DevMode:      true,
+		PrinterIndex: 0,
+		Host:         "0.0.0.0",
+		Port:         4471,
+		APIKeySet:    false,
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"ANKERCTL M5/M5C",
+		"bind: 0.0.0.0:4471",
+		"local:   http://127.0.0.1:4471/",
+		"exposed: all IPv4 interfaces",
+		"state: not configured",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("banner missing %q in output:\n%s", want, out)
+		}
 	}
 }
 

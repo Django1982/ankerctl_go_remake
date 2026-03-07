@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -256,32 +255,32 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 		port = web.DefaultPort
 	}
 
-	fmt.Fprintln(w, "    _    _   _ _  _______ ____ _____ _     ")
-	fmt.Fprintln(w, "   / \\  | \\ | | |/ / ____/ ___|_   _| |    ")
-	fmt.Fprintln(w, "  / _ \\ |  \\| | ' /|  _|| |     | | | |    ")
-	fmt.Fprintln(w, " / ___ \\| |\\  | . \\| |__| |___  | | | |___ ")
-	fmt.Fprintln(w, "/_/   \\_\\_| \\_|_|\\_\\_____\\____| |_| |_____|")
+	fmt.Fprintln(w, "   _   _   _ _  _______ ____ _____ _    ")
+	fmt.Fprintln(w, "  /_\\ | \\ | | |/ / ____/ ___|_   _| |   ")
+	fmt.Fprintln(w, " / _ \\|  \\| | ' /|  _|| |     | | | |   ")
+	fmt.Fprintln(w, "/ ___ \\ |\\  | . \\| |__| |___  | | | |___")
+	fmt.Fprintln(w, "/_/   \\_\\_| \\_|_|\\_\\_____\\____| |_| |____|")
+	fmt.Fprintln(w, "ANKERCTL M5/M5C")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "mode: webserver  dev=%t  printer-index=%d\n", b.DevMode, b.PrinterIndex)
-	fmt.Fprintf(w, "paths: config=%s  db=%s\n", b.ConfigDir, b.DBPath)
-	fmt.Fprintf(w, "listen: %s:%d\n", host, port)
-	for _, url := range bannerURLs(host, port) {
-		fmt.Fprintf(w, "url: %s\n", url)
+	fmt.Fprintf(w, "bind: %s\n", formatBind(host, port))
+	for _, line := range bannerAccessLines(host, port) {
+		fmt.Fprintln(w, line)
 	}
-	fmt.Fprintf(w, "api-key: %s\n", boolLabel(b.APIKeySet, "configured", "not set"))
+	fmt.Fprintf(w, "config: %s  api-key: %s\n", emptyDash(b.ConfigDir), boolLabel(b.APIKeySet, "configured", "not set"))
 
 	cfg := b.Config
 	if cfg == nil || !cfg.IsConfigured() {
-		fmt.Fprintln(w, "config: not configured")
+		fmt.Fprintln(w, "state: not configured")
 		fmt.Fprintln(w)
 		return
 	}
 
-	fmt.Fprintf(w, "config: configured  printers=%d  active=%d\n", len(cfg.Printers), b.PrinterIndex)
+	fmt.Fprintf(w, "state: configured  printers=%d  db=%s\n", len(cfg.Printers), emptyDash(b.DBPath))
 	if b.DevMode && cfg.Account != nil {
 		fmt.Fprintf(
 			w,
-			"account: region=%s country=%s email=%s user=%s token=%s\n",
+			"account: region=%s  country=%s  email=%s  user=%s  token=%s\n",
 			emptyDash(cfg.Account.Region),
 			emptyDash(cfg.Account.Country),
 			redactEmail(cfg.Account.Email),
@@ -296,19 +295,19 @@ func emitStartupBanner(w io.Writer, b startupBanner) {
 		}
 		fmt.Fprintf(
 			w,
-			"printer[%d]%s: %s  sn=%s  model=%s  ip=%s\n",
+			"printer[%d]%s: name=%s  model=%s  sn=%s  ip=%s\n",
 			i,
 			activeMark,
 			emptyDash(p.Name),
-			redactValue(p.SN, 0, 5),
 			emptyDash(p.Model),
+			shortRedaction(p.SN, 4),
 			emptyDash(p.IPAddr),
 		)
 		if b.DevMode {
 			fmt.Fprintf(
 				w,
-				"           p2p_duid=%s mqtt_key=%s\n",
-				redactValue(p.P2PDUID, 0, 6),
+				"           p2p_duid=%s  mqtt_key=%s\n",
+				shortRedaction(p.P2PDUID, 6),
 				redactedBytesLength(p.MQTTKey),
 			)
 		}
@@ -374,48 +373,13 @@ func parseListen(listen string) (string, int, bool) {
 	return host, port, true
 }
 
-func bannerURLs(host string, port int) []string {
-	if port <= 0 {
-		return nil
-	}
-	if host == "" {
-		host = web.DefaultHost
-	}
-	if host != "0.0.0.0" && host != "::" && host != "[::]" {
-		return []string{fmt.Sprintf("http://%s:%d/", host, port)}
-	}
-
-	urls := []string{fmt.Sprintf("http://127.0.0.1:%d/", port)}
-	seen := map[string]struct{}{urls[0]: {}}
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() {
-				continue
-			}
-			ip := ipNet.IP.To4()
-			if ip == nil {
-				continue
-			}
-			url := fmt.Sprintf("http://%s:%d/", ip.String(), port)
-			if _, ok := seen[url]; ok {
-				continue
-			}
-			seen[url] = struct{}{}
-			urls = append(urls, url)
-		}
-	}
-	sort.Strings(urls[1:])
-	return urls
-}
-
 func redactEmail(email string) string {
 	email = strings.TrimSpace(email)
 	parts := strings.Split(email, "@")
 	if len(parts) != 2 {
-		return redactValue(email, 1, 1)
+		return shortRedaction(email, 1)
 	}
-	return fmt.Sprintf("%s@%s", redactValue(parts[0], 1, 0), redactValue(parts[1], 1, 0))
+	return fmt.Sprintf("%s@%s", shortRedaction(parts[0], 1), shortRedaction(parts[1], 1))
 }
 
 func redactValue(value string, keepStart, keepEnd int) string {
@@ -450,6 +414,21 @@ func redactedBytesLength(value []byte) string {
 	return fmt.Sprintf("[REDACTED len=%d]", len(value))
 }
 
+func shortRedaction(value string, keepEnd int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	runes := []rune(value)
+	if keepEnd <= 0 {
+		return "..."
+	}
+	if keepEnd >= len(runes) {
+		return value
+	}
+	return "..." + string(runes[len(runes)-keepEnd:])
+}
+
 func emptyDash(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "-"
@@ -471,4 +450,55 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func formatBind(host string, port int) string {
+	if host == "" {
+		host = web.DefaultHost
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+func bannerAccessLines(host string, port int) []string {
+	if port <= 0 {
+		return nil
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = web.DefaultHost
+	}
+
+	switch host {
+	case "0.0.0.0":
+		return []string{
+			fmt.Sprintf("local:   http://127.0.0.1:%d/", port),
+			"exposed: all IPv4 interfaces",
+		}
+	case "::", "[::]":
+		return []string{
+			fmt.Sprintf("local4:  http://127.0.0.1:%d/", port),
+			fmt.Sprintf("local6:  http://[::1]:%d/", port),
+			"exposed: all IPv6 interfaces",
+		}
+	default:
+		if isIPv6Literal(host) {
+			return []string{fmt.Sprintf("local6:  http://[%s]:%d/", trimIPv6Brackets(host), port)}
+		}
+		return []string{fmt.Sprintf("local:   http://%s:%d/", host, port)}
+	}
+}
+
+func isIPv6Literal(host string) bool {
+	host = trimIPv6Brackets(host)
+	return strings.Contains(host, ":")
+}
+
+func trimIPv6Brackets(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	return host
 }
