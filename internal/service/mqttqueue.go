@@ -70,6 +70,7 @@ type MqttQueue struct {
 	pendingHistory     bool
 	lastFilename       string
 	currentPrinterStat int
+	lastMessageTime    time.Time
 	stopRequested      bool
 	gcodeLayerCount    int
 	debugLogging       bool
@@ -155,6 +156,7 @@ func (q *MqttQueue) resetPrintStateLocked() {
 	q.lastFilename = ""
 	q.stopRequested = false
 	q.currentPrinterStat = -1
+	q.lastMessageTime = time.Time{}
 	q.gcodeLayerCount = 0
 	q.lastStatePayload = nil
 }
@@ -194,6 +196,7 @@ func (q *MqttQueue) WorkerRun(ctx context.Context) error {
 				return ErrServiceRestartSignal
 			}
 			for _, msg := range q.currentClientFetch() {
+				q.noteMessageTime()
 				for _, obj := range msg.Objects {
 					q.handlePayload(obj)
 				}
@@ -249,6 +252,19 @@ func (q *MqttQueue) currentClientFetch() []mqttclient.DecodedMessage {
 		return nil
 	}
 	return c.Fetch()
+}
+
+func (q *MqttQueue) noteMessageTime() {
+	q.mu.Lock()
+	q.lastMessageTime = time.Now()
+	q.mu.Unlock()
+}
+
+// LastMessageTime reports the wall-clock time of the most recent decoded MQTT fetch.
+func (q *MqttQueue) LastMessageTime() time.Time {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.lastMessageTime
 }
 
 func (q *MqttQueue) handlePayload(obj map[string]any) {

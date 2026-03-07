@@ -501,6 +501,49 @@ func (s *PPPPService) IsConnected() bool {
 	return cli.State() == ppppclient.StateConnected
 }
 
+// ProbePPPP performs a lightweight PPPP connectivity probe without touching the
+// long-lived service registry instance used by the web UI and video pipeline.
+func ProbePPPP(ctx context.Context, cfg *config.Manager, printerIndex int, database *db.DB) bool {
+	return probePPPPWithFactory(ctx, defaultPPPPClientFactory(cfg, printerIndex, database))
+}
+
+func probePPPPWithFactory(ctx context.Context, factory ppppClientFactory) bool {
+	if factory == nil {
+		return false
+	}
+
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cli, err := factory(probeCtx)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = cli.Close() }()
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- cli.Run(probeCtx)
+	}()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if cli.State() == ppppclient.StateConnected {
+			return true
+		}
+
+		select {
+		case <-probeCtx.Done():
+			return cli.State() == ppppclient.StateConnected
+		case <-ticker.C:
+		case <-runErrCh:
+			return cli.State() == ppppclient.StateConnected
+		}
+	}
+}
+
 func (s *PPPPService) drainAllXzyh(cli ppppConn) error {
 	for ch := 0; ch < 8; ch++ {
 		wire, err := cli.Channel(ch)

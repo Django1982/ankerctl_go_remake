@@ -63,10 +63,10 @@ type Server struct {
 	maxUploadBytes     int64
 	devMode            bool
 
-	hostSet      bool
-	portSet      bool
-	apiKeySet    bool
-	devModeSet   bool
+	hostSet    bool
+	portSet    bool
+	apiKeySet  bool
+	devModeSet bool
 }
 
 // Option customizes server construction.
@@ -304,6 +304,16 @@ func (s *Server) Port() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.port
+}
+
+// ProbePPPP performs an out-of-band PPPP reachability probe for the active printer.
+func (s *Server) ProbePPPP(ctx context.Context) bool {
+	s.mu.RLock()
+	cfg := s.config
+	database := s.database
+	printerIndex := s.printerIndex
+	s.mu.RUnlock()
+	return service.ProbePPPP(ctx, cfg, printerIndex, database)
 }
 
 func (s *Server) initialize() error {

@@ -113,3 +113,32 @@ func TestPPPPService_P2PCommandUsesPythonShape(t *testing.T) {
 		t.Fatalf("data.open=%v, want true", data["open"])
 	}
 }
+
+func TestProbePPPPWithFactoryConnected(t *testing.T) {
+	fake := newFakePPPPConn()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	ok := probePPPPWithFactory(ctx, func(context.Context) (ppppConn, error) {
+		return fake, nil
+	})
+	if !ok {
+		t.Fatal("probePPPPWithFactory() = false, want true")
+	}
+}
+
+func TestProbePPPPWithFactoryFailure(t *testing.T) {
+	fake := newFakePPPPConn()
+	fake.state = ppppclient.StateDisconnected
+	fake.runErr = errors.New("probe failed")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	ok := probePPPPWithFactory(ctx, func(context.Context) (ppppConn, error) {
+		return fake, nil
+	})
+	if ok {
+		t.Fatal("probePPPPWithFactory() = true, want false")
+	}
+}

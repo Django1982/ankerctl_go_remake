@@ -22,12 +22,19 @@ type testState struct {
 	loggedIn    bool
 	unsupported bool
 	video       bool
+	probePPPP   func(context.Context) bool
 }
 
 func (s testState) APIKey() string            { return s.apiKey }
 func (s testState) IsLoggedIn() bool          { return s.loggedIn }
 func (s testState) IsUnsupportedDevice() bool { return s.unsupported }
 func (s testState) VideoSupported() bool      { return s.video }
+func (s testState) ProbePPPP(ctx context.Context) bool {
+	if s.probePPPP == nil {
+		return false
+	}
+	return s.probePPPP(ctx)
+}
 
 type mockService struct {
 	name  string
@@ -293,6 +300,58 @@ func TestPPPPStateHandler(t *testing.T) {
 	if got["status"] != "connected" {
 		t.Fatalf("status=%v want=connected", got["status"])
 	}
+}
+
+func TestPPPPStateHandlerProbeSuccess(t *testing.T) {
+	h := New(nil, testState{
+		loggedIn: true,
+		video:    true,
+		probePPPP: func(context.Context) bool {
+			return true
+		},
+	}, nil)
+	conn, cleanup := newWSServer(t, "/ws/pppp-state", h.PPPPState)
+	defer cleanup()
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read message: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got["status"] == "connected" {
+		return
+	}
+	t.Fatalf("status=%v want=connected", got["status"])
+}
+
+func TestPPPPStateHandlerProbeFailure(t *testing.T) {
+	h := New(nil, testState{
+		loggedIn: true,
+		video:    true,
+		probePPPP: func(context.Context) bool {
+			return false
+		},
+	}, nil)
+	conn, cleanup := newWSServer(t, "/ws/pppp-state", h.PPPPState)
+	defer cleanup()
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read message: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got["status"] == "disconnected" {
+		return
+	}
+	t.Fatalf("status=%v want=disconnected", got["status"])
 }
 
 func TestUploadHandler(t *testing.T) {
