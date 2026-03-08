@@ -361,7 +361,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 	meta := fmt.Sprintf("0,%s,%d,%s,%s,%s,%s", info.Name, info.Size, md5Str, info.UserName, info.UserID, fileUUID)
 	metaData := append([]byte(meta), 0)
 
-	// 3. Send BEGIN
+	// 3. Send BEGIN and wait for ACK (Python: aabb_request waits after each frame).
 	begin := protocol.Aabb{FrameType: protocol.FileTransferBegin}
 	bp, err := begin.PackWithCRC(metaData)
 	if err != nil {
@@ -370,9 +370,12 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 	if _, _, err := ch.Write(bp, true); err != nil {
 		return fmt.Errorf("write aabb begin: %w", err)
 	}
+	if err := waitReply(); err != nil {
+		return fmt.Errorf("aabb begin reply: %w", err)
+	}
 
-	// 4. Send DATA
-	blockSize := 1024 * 32
+	// 4. Send DATA — 128KB blocks matches Python blocksize.
+	blockSize := 1024 * 128
 	var pos int64
 	for pos < info.Size {
 		end := pos + int64(blockSize)
