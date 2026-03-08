@@ -204,11 +204,32 @@ func (s *PPPPService) SetLight(ctx context.Context, on bool) error {
 	return s.P2PCommand(ctx, protocol.P2PSubCmdLightStateSwitch, map[string]any{"open": on})
 }
 
+// waitConnected blocks until the PPPP client reaches StateConnected or the
+// context / a 10-second deadline expires. This mirrors Python's pppp_open()
+// which polls until api.state == PPPPState.Connected before uploading.
+func (s *PPPPService) waitConnected(ctx context.Context) (ppppConn, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		cli := s.currentClient()
+		if cli != nil && cli.State() == ppppclient.StateConnected {
+			return cli, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("ppppservice: connection timeout waiting for handshake")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // Upload implements PPPPFileUploader interface.
 func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byte, progress func(sent, total int64)) error {
-	cli := s.currentClient()
-	if cli == nil {
-		return errors.New("ppppservice: no client")
+	cli, err := s.waitConnected(ctx)
+	if err != nil {
+		return err
 	}
 	ch, err := cli.Channel(1)
 	if err != nil {
@@ -437,6 +458,11 @@ func (s *PPPPService) WorkerStart() error {
 	return nil
 }
 
+// connectTimeout is how long WorkerRun waits for the initial PPPP handshake
+// (PunchPkt → StateConnected) before giving up and restarting.
+// Python's pppp_open uses a 10-second deadline for the same wait.
+const connectTimeout = 10 * time.Second
+
 // WorkerRun blocks while PPPP is running and dispatches XZYH payloads.
 func (s *PPPPService) WorkerRun(ctx context.Context) error {
 	cli := s.currentClient()
@@ -452,6 +478,8 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
+	connectDeadline := time.Now().Add(connectTimeout)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -466,8 +494,16 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 			return ErrServiceRestartSignal
 		case <-ticker.C:
 			if cli.State() == ppppclient.StateDisconnected {
-				return ErrServiceRestartSignal
+				// Give the printer time to reply to LanSearch before restarting.
+				// Python waits up to 10 s for StateConnected; we do the same.
+				if time.Now().After(connectDeadline) {
+					s.log.Warn("ppppservice: connection timeout, restarting")
+					return ErrServiceRestartSignal
+				}
+				continue
 			}
+			// Once connected, reset deadline (not used further, but clean).
+			connectDeadline = time.Time{}
 			if err := s.drainAllXzyh(cli); err != nil {
 				s.log.Warn("xzyh drain failed", "err", err)
 				return ErrServiceRestartSignal

@@ -53,6 +53,22 @@ func (h *Handler) SlicerUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Borrow ppppservice so it starts and connects before the upload begins.
+	// Python parity: filetransfer.py calls pppp_open() which waits for
+	// StateConnected before sending any data.
+	if _, err := h.svc.Borrow("ppppservice"); err != nil {
+		h.writeError(w, http.StatusServiceUnavailable, "pppp service unavailable")
+		return
+	}
+	defer h.svc.Return("ppppservice")
+
+	// Borrow filetransfer so its WorkerRun loop is active to process the request.
+	if _, err := h.svc.Borrow("filetransfer"); err != nil {
+		h.writeError(w, http.StatusServiceUnavailable, "file transfer service unavailable")
+		return
+	}
+	defer h.svc.Return("filetransfer")
+
 	ft, ok := h.fileTransfer()
 	if !ok {
 		h.writeError(w, http.StatusServiceUnavailable, "file transfer service unavailable")
