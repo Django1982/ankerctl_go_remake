@@ -39,6 +39,22 @@ go vet ./...
 - **Layering:** Never import upward across internal package layers (see Architecture).
 - **Automation:** Prefer non-interactive commands (e.g., `git merge --no-edit`, `npm --yes`) to avoid hangs.
 
+## Specialist Agents (USE THEM)
+
+When a task clearly falls into a specialist domain, **always delegate to the appropriate agent** rather than handling it in the main context. Specialists have deep domain knowledge and produce higher-quality results.
+
+| Task | Agent |
+|---|---|
+| PPPP/MQTT protocol implementation, Go concurrency, goroutine leaks | `go-network-systems-engineer` |
+| Flask→Go migration planning, idiomatic Go review, architecture | `go-migration-architect` |
+| Protocol validation, bit-exact packet parsing, crypto | `protocol-reverse-engineer` |
+| Cross-service bugs, lifecycle management, complex debugging | `problem-solver` |
+| Migration coordination, phase tracking, delegation | `go-migration-coordinator` |
+| HTML/CSS/JS frontend bugs, template issues, layout | `webdev-expert` |
+| Security audit, auth bypass, pentest | `security-pentester` |
+
+**Rule:** If a task spans >2 files in a single protocol/infra domain, use the relevant specialist.
+
 ## Git Workflow (MANDATORY)
 
 To ensure a stable `main` branch and professional history:
