@@ -4,10 +4,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/django1982/ankerctl/internal/service"
 )
 
 var unsafeGCodePrefixes = map[string]struct{}{
 	"G0": {}, "G1": {}, "G28": {}, "G29": {}, "G91": {}, "G90": {},
+}
+
+// normalizeGCodeLines strips inline comments and blank lines, matching
+// Python's cli.util.normalize_gcode_lines behaviour.
+func normalizeGCodeLines(gcode string) []string {
+	var out []string
+	for _, raw := range strings.Split(gcode, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, ";", 2)[0])
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // PrinterGCode sends raw gcode commands.
@@ -20,18 +35,29 @@ func (h *Handler) PrinterGCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mqtt, ok := h.mqttQueue()
-	if !ok {
+	lines := normalizeGCodeLines(payload.GCode)
+	if len(lines) == 0 {
+		h.writeError(w, http.StatusBadRequest, "No executable gcode lines found")
+		return
+	}
+
+	// Borrow ensures the mqttqueue service is running (Python parity: borrow("mqttqueue")).
+	svc, err := h.svc.Borrow("mqttqueue")
+	if err != nil {
 		h.writeError(w, http.StatusServiceUnavailable, "Service unavailable")
+		return
+	}
+	defer h.svc.Return("mqttqueue")
+
+	mqtt, ok := svc.(*service.MqttQueue)
+	if !ok {
+		h.writeError(w, http.StatusInternalServerError, "Service type mismatch")
 		return
 	}
 
 	if mqtt.IsPrinting() {
-		for _, line := range strings.Split(payload.GCode, "\n") {
-			parts := strings.Fields(strings.TrimSpace(line))
-			if len(parts) == 0 {
-				continue
-			}
+		for _, line := range lines {
+			parts := strings.Fields(line)
 			if _, blocked := unsafeGCodePrefixes[strings.ToUpper(parts[0])]; blocked {
 				h.writeError(w, http.StatusConflict, "Motion commands blocked while printing")
 				return
@@ -39,7 +65,7 @@ func (h *Handler) PrinterGCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := mqtt.SendGCode(r.Context(), payload.GCode); err != nil {
+	if err := mqtt.SendGCode(r.Context(), strings.Join(lines, "\n")); err != nil {
 		h.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
