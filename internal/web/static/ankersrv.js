@@ -1561,7 +1561,7 @@ $(function () {
             .catch(err => gcodeLog(`✗ Failed: ${err.message}`));
     }
 
-    // File upload
+    // File upload via PPPP (same path as slicers — /api/files/local)
     $("#gcode-file-send").on("click", function () {
         const fileInput = document.getElementById("gcode-file");
         if (!fileInput.files.length) {
@@ -1569,14 +1569,23 @@ $(function () {
             return;
         }
         const file = fileInput.files[0];
-        const reader = new FileReader();
-        reader.onload = function (e) {
-            const content = e.target.result;
-            const lines = content.split("\n").filter(l => l.trim() && !l.trim().startsWith(";"));
-            gcodeLog(`Sending ${lines.length} commands from ${file.name}...`);
-            sendGCodeWithLog(content);
-        };
-        reader.readAsText(file);
+        gcodeLog(`Uploading ${file.name} (${formatBytes(file.size)})…`);
+        const btn = $(this);
+        btn.prop("disabled", true);
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("print", "true");
+        fetch("/api/files/local", { method: "POST", body: fd })
+            .then(resp => resp.json().then(data => ({ ok: resp.ok, status: resp.status, data })))
+            .then(({ ok, status, data }) => {
+                if (ok) {
+                    gcodeLog(`✓ ${file.name} queued for printing`);
+                } else {
+                    gcodeLog(`✗ Error ${status}: ${data.error || "Unknown error"}`);
+                }
+            })
+            .catch(err => gcodeLog(`✗ Failed: ${err.message}`))
+            .finally(() => btn.prop("disabled", false));
     });
 
     // Custom text input
