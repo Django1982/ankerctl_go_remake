@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"syscall"
@@ -259,7 +260,8 @@ func (c *Client) Run(ctx context.Context) error {
 				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
-				// Ignore transient read/decode errors and continue loop.
+				// Log unexpected decode/read errors at WARN level for diagnostics.
+				slog.Warn("pppp: recv/decode error", "err", err)
 				break
 			}
 		}

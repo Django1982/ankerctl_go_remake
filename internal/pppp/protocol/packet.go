@@ -514,13 +514,12 @@ func (p PunchPkt) MarshalPayload() ([]byte, error) {
 }
 
 func ParsePunchPkt(payload []byte) (PunchPkt, error) {
-	d, rest, err := parseDuid(payload)
+	d, _, err := parseDuid(payload)
 	if err != nil {
 		return PunchPkt{}, err
 	}
-	if len(rest) != 0 {
-		return PunchPkt{}, errors.New("pppp: trailing bytes in punch_pkt")
-	}
+	// Trailing bytes are ignored (Python parity: PktPunchPkt.parse returns
+	// remaining bytes without error; some firmware versions append extra data).
 	return PunchPkt{DUID: d}, nil
 }
 
