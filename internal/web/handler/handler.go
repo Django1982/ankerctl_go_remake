@@ -43,6 +43,8 @@ type TemplateData struct {
 	UploadRateChoices   []int
 	UploadRateMbps      int
 	UploadRateEnv       bool
+	UploadRateConfig    int
+	UploadRateSource    string
 }
 
 type Flash struct {

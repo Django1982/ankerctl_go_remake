@@ -32,13 +32,19 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 	if cfg != nil {
 		data.Printers = cfg.Printers
 		data.Printer = printer
-		data.UploadRateMbps = cfg.UploadRateMbps
+		data.UploadRateConfig = cfg.UploadRateMbps
 		data.AnkerConfig = configShow(cfg)
 		if cfg.Account != nil {
 			data.ConfigExistingEmail = cfg.Account.Email
 			data.CurrentCountry = cfg.Account.Country
 		}
 	}
+
+	// Resolve effective upload rate (env may override config)
+	effectiveRate, rateSource := model.ResolveUploadRateMbpsWithSource(data.UploadRateConfig, 0)
+	data.UploadRateMbps = effectiveRate
+	data.UploadRateSource = rateSource
+	data.UploadRateEnv = os.Getenv("UPLOAD_RATE_MBPS") != ""
 
 	if h.cfg != nil {
 		data.LoginFilePath = h.cfg.ConfigDir()
