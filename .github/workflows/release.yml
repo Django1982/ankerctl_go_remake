@@ -19,6 +19,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Prepare embedded web vendor assets
+        run: bash scripts/prepare-web-vendor.sh
+
       - name: Build linux test binary
         env:
           CGO_ENABLED: "0"
@@ -51,6 +54,14 @@ jobs:
           done
 
           curl -fsS "http://127.0.0.1:4470/" | grep -q "ankerctl"
+          page="$(curl -fsS "http://127.0.0.1:4470/")"
+          printf "%s" "$page" | grep -q "ankerctl"
+
+          printf "%s" "$page" | grep -Eo '/static/[^" ]+' | sort -u > static-assets.txt
+          while read -r asset; do
+            curl -fsS "http://127.0.0.1:4470${asset}" >/dev/null
+          done < static-assets.txt
+
           curl -fsS "http://127.0.0.1:4470/static/ankersrv.css" | grep -q "nav-tabs"
           curl -fsS "http://127.0.0.1:4470/static/ankersrv.js" | grep -q "fetch"
   build:
@@ -82,6 +93,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Prepare embedded web vendor assets
+        run: bash scripts/prepare-web-vendor.sh
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -100,6 +114,7 @@ jobs:
           mkdir -p package
           cp "$name" package/
           cp README.md package/
+          cp -R internal/web/static package/web-static/
           if [ "${{ matrix.goos }}" = "windows" ]; then
             (cd package && zip -9 -r "../$name.zip" .)
           else
