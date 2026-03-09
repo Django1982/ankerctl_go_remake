@@ -1,0 +1,46 @@
+name: Wiki Sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/wiki/**"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync docs/wiki to GitHub Wiki
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push to wiki
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Clone the wiki repo (create it if it does not exist yet)
+          WIKI_URL="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+          git clone "${WIKI_URL}" wiki-repo 2>/dev/null || {
+            mkdir wiki-repo && cd wiki-repo && git init
+            git remote add origin "${WIKI_URL}"
+            cd ..
+          }
+
+          # Sync markdown files
+          cp docs/wiki/*.md wiki-repo/
+
+          cd wiki-repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No wiki changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Sync wiki from docs/wiki/ (${GITHUB_SHA:0:7})"
+          git push origin master || git push origin main

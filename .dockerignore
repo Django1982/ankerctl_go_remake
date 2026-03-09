@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# IDE / Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+ankerctl
+*.exe
+*.test
+*.out
+
+# Documentation (not needed in image)
+docs/
+*.md
+!go.mod
+!go.sum
+
+# CI / Config
+.github/
+.env
+.env.*
+!.env.example
+
+# Agent / Claude files
+.claude/
+CLAUDE.md
+GEMINI.md
+AGENTS.md
+MIGRATION_PLAN.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test fixtures
+*_test.go
+testdata/
+
+# Captures (mounted at runtime)
+captures/
