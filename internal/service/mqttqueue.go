@@ -77,6 +77,12 @@ type MqttQueue struct {
 	lastStatePayload   map[string]any
 	bedLevelingGrid    map[string]any
 
+	// Temperature tracking (populated from ct=1003 / ct=1004 messages).
+	nozzleTemp       *int
+	nozzleTempTarget *int
+	bedTemp          *int
+	bedTempTarget    *int
+
 	homeAssistant eventSink
 	timelapse     eventSink
 }
@@ -159,6 +165,10 @@ func (q *MqttQueue) resetPrintStateLocked() {
 	q.lastMessageTime = time.Time{}
 	q.gcodeLayerCount = 0
 	q.lastStatePayload = nil
+	q.nozzleTemp = nil
+	q.nozzleTempTarget = nil
+	q.bedTemp = nil
+	q.bedTempTarget = nil
 }
 
 // WorkerInit resets internal state.
@@ -267,6 +277,55 @@ func (q *MqttQueue) LastMessageTime() time.Time {
 	return q.lastMessageTime
 }
 
+// NozzleTemp returns the most recent nozzle temperature, or nil if unknown.
+func (q *MqttQueue) NozzleTemp() *int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.nozzleTemp == nil {
+		return nil
+	}
+	v := *q.nozzleTemp
+	return &v
+}
+
+// NozzleTempTarget returns the most recent nozzle target temperature, or nil if unknown.
+func (q *MqttQueue) NozzleTempTarget() *int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.nozzleTempTarget == nil {
+		return nil
+	}
+	v := *q.nozzleTempTarget
+	return &v
+}
+
+// RequestStatus triggers an immediate status query to the printer.
+// This is used by the filament service to poll nozzle temperature.
+func (q *MqttQueue) RequestStatus() {
+	q.mu.Lock()
+	c := q.client
+	q.mu.Unlock()
+	if c == nil {
+		return
+	}
+	cmd := map[string]any{
+		"commandType": int(protocol.MqttCmdAppQueryStatus),
+		"value":       0,
+	}
+	if err := c.Query(context.Background(), cmd); err != nil {
+		q.log.Warn("request_status query failed", "err", err)
+	}
+}
+
+// normalizeTemp divides by 100 if the value exceeds 1000 (firmware sends
+// 1/100th degree units sometimes). Mirrors Python _normalize_temp.
+func normalizeTemp(v int) int {
+	if v > 1000 {
+		return v / 100
+	}
+	return v
+}
+
 func (q *MqttQueue) handlePayload(obj map[string]any) {
 	ct, ok := asInt(obj["commandType"])
 	if !ok {
@@ -302,6 +361,10 @@ func (q *MqttQueue) handlePayload(obj map[string]any) {
 		q.lastStatePayload = cloneMap(normalized)
 		q.mu.Unlock()
 		q.handleCT1000(normalized)
+	case int(protocol.MqttCmdNozzleTemp): // ct=1003
+		q.handleNozzleTemp(normalized)
+	case int(protocol.MqttCmdHotbedTemp): // ct=1004
+		q.handleBedTemp(normalized)
 	}
 
 	if isForwardRelevant(ct, normalized) {
@@ -380,6 +443,44 @@ func (q *MqttQueue) handleCT1000(payload map[string]any) {
 		if _, err := q.history.RecordStart(filename, ""); err != nil {
 			q.log.Warn("history record start failed", "filename", filename, "err", err)
 		}
+	}
+}
+
+func (q *MqttQueue) handleNozzleTemp(payload map[string]any) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if current, ok := asInt(payload["currentTemp"]); ok {
+		v := normalizeTemp(current)
+		q.nozzleTemp = &v
+	} else if current, ok := asInt(payload["value"]); ok {
+		v := normalizeTemp(current)
+		q.nozzleTemp = &v
+	}
+	if target, ok := asInt(payload["targetTemp"]); ok {
+		v := normalizeTemp(target)
+		q.nozzleTempTarget = &v
+	} else if target, ok := asInt(payload["target"]); ok {
+		v := normalizeTemp(target)
+		q.nozzleTempTarget = &v
+	}
+}
+
+func (q *MqttQueue) handleBedTemp(payload map[string]any) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if current, ok := asInt(payload["currentTemp"]); ok {
+		v := normalizeTemp(current)
+		q.bedTemp = &v
+	} else if current, ok := asInt(payload["value"]); ok {
+		v := normalizeTemp(current)
+		q.bedTemp = &v
+	}
+	if target, ok := asInt(payload["targetTemp"]); ok {
+		v := normalizeTemp(target)
+		q.bedTempTarget = &v
+	} else if target, ok := asInt(payload["target"]); ok {
+		v := normalizeTemp(target)
+		q.bedTempTarget = &v
 	}
 }
 
@@ -571,6 +672,14 @@ func (q *MqttQueue) SnapshotState() map[string]any {
 	if q.lastStatePayload != nil {
 		out["last_event"] = cloneMap(q.lastStatePayload)
 	}
+	// Temperature data (Python parity: get_state() returns "temperature" dict).
+	tempMap := map[string]any{
+		"nozzle":        q.nozzleTemp,
+		"nozzle_target": q.nozzleTempTarget,
+		"bed":           q.bedTemp,
+		"bed_target":    q.bedTempTarget,
+	}
+	out["temperature"] = tempMap
 	return out
 }
 

@@ -2836,6 +2836,98 @@ $(function () {
 
     let _filamentSortAsc = true;
     let _filamentAllProfiles = [];
+    let _filamentSwapToken = null;
+
+    function filamentFindProfileById(profileId) {
+        const id = parseInt(profileId, 10);
+        if (!Number.isFinite(id)) return null;
+        return _filamentAllProfiles.find(p => parseInt(p.id, 10) === id) || null;
+    }
+
+    function filamentServiceTemp(profile) {
+        if (!profile) return "";
+        return profile.nozzle_temp_other_layer ?? profile.nozzle_temp_first_layer ?? profile.nozzle_temp ?? "";
+    }
+
+    function filamentSetServiceStatus(message, level) {
+        if (!level) level = "secondary";
+        var statusEl = document.getElementById("filament-service-status");
+        if (!statusEl) return;
+        statusEl.className = "alert alert-" + level + " py-2 small mb-3";
+        statusEl.textContent = message;
+    }
+
+    function filamentPopulateSelect(selectId, selectedValue) {
+        var select = document.getElementById(selectId);
+        if (!select) return;
+        var previous = String(selectedValue || select.value || "");
+        select.innerHTML = '<option value="">Select profile...</option>';
+        _filamentAllProfiles.forEach(function(p) {
+            var option = document.createElement("option");
+            option.value = String(p.id);
+            var temp = filamentServiceTemp(p);
+            option.textContent = temp ? p.name + " (" + temp + "\u00b0C)" : p.name;
+            if (option.value === previous) option.selected = true;
+            select.appendChild(option);
+        });
+    }
+
+    function filamentSyncQuickServiceTemp() {
+        var profile = filamentFindProfileById((document.getElementById("filament-service-profile") || {}).value);
+        var tempEl = document.getElementById("filament-service-temp");
+        if (!tempEl) return;
+        tempEl.value = profile ? filamentServiceTemp(profile) : "";
+    }
+
+    function filamentUpdateSwapState(data) {
+        var stateEl = document.getElementById("filament-swap-state");
+        var confirmBtn = document.getElementById("filament-swap-confirm-btn");
+        var cancelBtn = document.getElementById("filament-swap-cancel-btn");
+        var swap = data && data.pending ? data.swap : null;
+
+        _filamentSwapToken = swap ? swap.token : null;
+
+        if (confirmBtn) confirmBtn.disabled = !swap;
+        if (cancelBtn) cancelBtn.disabled = !swap;
+
+        if (!stateEl) return;
+        if (!swap) {
+            stateEl.textContent = "No swap in progress.";
+            return;
+        }
+
+        stateEl.textContent =
+            "Pending swap: unload " + swap.unload_profile_name + " (" + swap.unload_length_mm + " mm @ " + swap.unload_temp_c + "\u00b0C), " +
+            "then load " + swap.load_profile_name + " (" + swap.load_length_mm + " mm @ " + swap.load_temp_c + "\u00b0C).";
+    }
+
+    function filamentRefreshSwapState() {
+        fetch("/api/filaments/service/swap")
+            .then(function(resp) { return resp.json().then(function(d) { return {ok: resp.ok, data: d}; }); })
+            .then(function(r) {
+                if (!r.ok) {
+                    filamentSetServiceStatus(r.data.error || "Failed to load swap state (HTTP " + r.status + ")", "danger");
+                    return;
+                }
+                filamentUpdateSwapState(r.data);
+            })
+            .catch(function(err) {
+                filamentSetServiceStatus("Failed to load swap state: " + err, "danger");
+            });
+    }
+
+    function filamentServiceRequest(url, payload) {
+        return fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload || {}),
+        }).then(function(resp) {
+            return resp.json().catch(function() { return {}; }).then(function(data) {
+                if (!resp.ok) throw new Error(data.error || "HTTP " + resp.status);
+                return data;
+            });
+        });
+    }
 
     function _renderFilaments() {
         const tbody = document.getElementById("filaments-tbody");
@@ -2924,6 +3016,10 @@ $(function () {
             .then(r => r.json())
             .then(data => {
                 _filamentAllProfiles = data.filaments || [];
+                filamentPopulateSelect("filament-service-profile");
+                filamentPopulateSelect("filament-swap-unload-profile");
+                filamentPopulateSelect("filament-swap-load-profile");
+                filamentSyncQuickServiceTemp();
                 _renderFilaments();
             })
             .catch(err => console.error("Filaments load failed:", err));
@@ -2946,6 +3042,100 @@ $(function () {
     const filamentSearch = document.getElementById("filament-search");
     if (filamentSearch) {
         filamentSearch.addEventListener("input", function () { _renderFilaments(); });
+    }
+
+    // Filament service: profile select sync
+    var filamentServiceProfile = document.getElementById("filament-service-profile");
+    if (filamentServiceProfile) {
+        filamentServiceProfile.addEventListener("change", filamentSyncQuickServiceTemp);
+    }
+
+    // Filament service: preheat
+    var filamentServicePreheatBtn = document.getElementById("filament-service-preheat-btn");
+    if (filamentServicePreheatBtn) {
+        filamentServicePreheatBtn.addEventListener("click", function () {
+            var profileId = (document.getElementById("filament-service-profile") || {}).value;
+            if (!profileId) { filamentSetServiceStatus("Select a filament profile first.", "warning"); return; }
+            filamentServiceRequest("/api/filaments/service/preheat", { profile_id: parseInt(profileId, 10) })
+                .then(function(res) { filamentSetServiceStatus("Preheating " + res.profile_name + " to " + res.target_temp_c + "\u00b0C.", "warning"); })
+                .catch(function(err) { filamentSetServiceStatus("Preheat failed: " + err.message, "danger"); });
+        });
+    }
+
+    // Filament service: extrude
+    var filamentServiceExtrudeBtn = document.getElementById("filament-service-extrude-btn");
+    if (filamentServiceExtrudeBtn) {
+        filamentServiceExtrudeBtn.addEventListener("click", function () {
+            var profileId = (document.getElementById("filament-service-profile") || {}).value;
+            var lengthMm = parseFloat((document.getElementById("filament-service-length") || {}).value || "0");
+            if (!profileId) { filamentSetServiceStatus("Select a filament profile first.", "warning"); return; }
+            filamentServiceRequest("/api/filaments/service/move", { profile_id: parseInt(profileId, 10), action: "extrude", length_mm: lengthMm })
+                .then(function(res) { filamentSetServiceStatus("Extruding " + res.length_mm + " mm with " + res.profile_name + " at " + res.target_temp_c + "\u00b0C.", "success"); })
+                .catch(function(err) { filamentSetServiceStatus("Extrude failed: " + err.message, "danger"); });
+        });
+    }
+
+    // Filament service: retract
+    var filamentServiceRetractBtn = document.getElementById("filament-service-retract-btn");
+    if (filamentServiceRetractBtn) {
+        filamentServiceRetractBtn.addEventListener("click", function () {
+            var profileId = (document.getElementById("filament-service-profile") || {}).value;
+            var lengthMm = parseFloat((document.getElementById("filament-service-length") || {}).value || "0");
+            if (!profileId) { filamentSetServiceStatus("Select a filament profile first.", "warning"); return; }
+            filamentServiceRequest("/api/filaments/service/move", { profile_id: parseInt(profileId, 10), action: "retract", length_mm: lengthMm })
+                .then(function(res) { filamentSetServiceStatus("Retracting " + res.length_mm + " mm with " + res.profile_name + " at " + res.target_temp_c + "\u00b0C.", "secondary"); })
+                .catch(function(err) { filamentSetServiceStatus("Retract failed: " + err.message, "danger"); });
+        });
+    }
+
+    // Filament service: cooldown
+    var filamentServiceCooldownBtn = document.getElementById("filament-service-cooldown-btn");
+    if (filamentServiceCooldownBtn) {
+        filamentServiceCooldownBtn.addEventListener("click", function () {
+            sendPrinterGCode("M104 S0\nM140 S0\nM106 S0");
+            filamentSetServiceStatus("Cooldown sent: nozzle, bed and fan set to 0.", "secondary");
+        });
+    }
+
+    // Filament service: swap start
+    var filamentSwapStartBtn = document.getElementById("filament-swap-start-btn");
+    if (filamentSwapStartBtn) {
+        filamentSwapStartBtn.addEventListener("click", function () {
+            var unloadProfileId = parseInt((document.getElementById("filament-swap-unload-profile") || {}).value || "", 10);
+            var loadProfileId = parseInt((document.getElementById("filament-swap-load-profile") || {}).value || "", 10);
+            var unloadLengthMm = parseFloat((document.getElementById("filament-swap-unload-length") || {}).value || "0");
+            var loadLengthMm = parseFloat((document.getElementById("filament-swap-load-length") || {}).value || "0");
+            if (!Number.isFinite(unloadProfileId) || !Number.isFinite(loadProfileId)) {
+                filamentSetServiceStatus("Select unload and load profiles first.", "warning");
+                return;
+            }
+            filamentServiceRequest("/api/filaments/service/swap/start", {
+                unload_profile_id: unloadProfileId, load_profile_id: loadProfileId,
+                unload_length_mm: unloadLengthMm, load_length_mm: loadLengthMm
+            })
+                .then(function(res) { filamentUpdateSwapState(res); filamentSetServiceStatus(res.message, "primary"); })
+                .catch(function(err) { filamentSetServiceStatus("Swap start failed: " + err.message, "danger"); });
+        });
+    }
+
+    // Filament service: swap confirm
+    var filamentSwapConfirmBtn = document.getElementById("filament-swap-confirm-btn");
+    if (filamentSwapConfirmBtn) {
+        filamentSwapConfirmBtn.addEventListener("click", function () {
+            filamentServiceRequest("/api/filaments/service/swap/confirm", { token: _filamentSwapToken })
+                .then(function(res) { filamentUpdateSwapState(res); filamentSetServiceStatus(res.message, "success"); })
+                .catch(function(err) { filamentSetServiceStatus("Swap confirm failed: " + err.message, "danger"); });
+        });
+    }
+
+    // Filament service: swap cancel
+    var filamentSwapCancelBtn = document.getElementById("filament-swap-cancel-btn");
+    if (filamentSwapCancelBtn) {
+        filamentSwapCancelBtn.addEventListener("click", function () {
+            filamentServiceRequest("/api/filaments/service/swap/cancel", { token: _filamentSwapToken })
+                .then(function(res) { filamentUpdateSwapState(res); filamentSetServiceStatus(res.message || "Filament swap cancelled.", "secondary"); })
+                .catch(function(err) { filamentSetServiceStatus("Swap cancel failed: " + err.message, "danger"); });
+        });
     }
 
     // Save button: create or update
@@ -3001,6 +3191,7 @@ $(function () {
     if (filamentsTabBtn) {
         filamentsTabBtn.addEventListener("shown.bs.tab", function () {
             loadFilaments();
+            filamentRefreshSwapState();
         });
     }
 

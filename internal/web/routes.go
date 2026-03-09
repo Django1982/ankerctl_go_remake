@@ -77,6 +77,14 @@ func (s *Server) registerRoutes() {
 	r.Post("/api/filaments/{id}/apply", h.FilamentApply)
 	r.Post("/api/filaments/{id}/duplicate", h.FilamentDuplicate)
 
+	// Filament Service
+	r.Get("/api/filaments/service/swap", h.FilamentServiceSwapState)
+	r.Post("/api/filaments/service/preheat", h.FilamentServicePreheat)
+	r.Post("/api/filaments/service/move", h.FilamentServiceMove)
+	r.Post("/api/filaments/service/swap/start", h.FilamentServiceSwapStart)
+	r.Post("/api/filaments/service/swap/confirm", h.FilamentServiceSwapConfirm)
+	r.Post("/api/filaments/service/swap/cancel", h.FilamentServiceSwapCancel)
+
 	// Timelapses
 	r.Get("/api/timelapses", h.TimelapseList)
 	r.Get("/api/timelapse/{filename}", h.TimelapseDownload)
