@@ -24,6 +24,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is injected at build time via -ldflags "-X main.Version=<tag>".
+// Falls back to "dev" for local builds.
+var Version = "dev"
+
 var (
 	configDir    string
 	devMode      bool
@@ -226,7 +230,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version info",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("ankerctl-go v0.1.0")
+			fmt.Printf("ankerctl-go %s\n", Version)
 		},
 	}
 }

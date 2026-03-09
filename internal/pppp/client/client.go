@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"syscall"
 	"time"
 
 	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
@@ -96,7 +95,7 @@ func OpenBroadcastLAN(duid protocol.Duid) (*Client, error) {
 	}
 	var setSockOptErr error
 	if ctrlErr := rawConn.Control(func(fd uintptr) {
-		setSockOptErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		setSockOptErr = setSockOptBroadcast(fd)
 	}); ctrlErr != nil {
 		conn.Close()
 		return nil, fmt.Errorf("pppp: control raw conn: %w", ctrlErr)
@@ -132,7 +131,7 @@ func OpenBroadcast() (*Client, error) {
 	}
 	var setSockOptErr error
 	if ctrlErr := rawConn.Control(func(fd uintptr) {
-		setSockOptErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		setSockOptErr = setSockOptBroadcast(fd)
 	}); ctrlErr != nil {
 		conn.Close()
 		return nil, fmt.Errorf("pppp: control raw conn: %w", ctrlErr)
