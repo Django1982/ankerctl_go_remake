@@ -99,17 +99,19 @@ go build -o ankerctl ./cmd/ankerctl/
 
 ## Configuration
 
-### Import Login Data
+### Connect Your Printer
 
-**Option 1 -- Web UI (recommended):**
-Open [http://localhost:4470](http://localhost:4470) and upload your `login.json` file via the Setup tab, or log in with your AnkerMake email and password.
+**Option 1 -- Direct login (recommended):**
+Open [http://localhost:4470](http://localhost:4470), go to the Setup tab and log in with your AnkerMake email and password. No extra files needed.
 
-**Option 2 -- CLI:**
+**Option 2 -- Import `login.json` (offline / no account access):**
 ```sh
+# Via Web UI: Setup tab → upload login.json
+# Via CLI:
 ./ankerctl config import path/to/login.json
 ```
 
-The `login.json` file can be found at:
+The `login.json` file can be exported from the AnkerMake slicer:
 - **macOS:** `~/Library/Application Support/AnkerMake/AnkerMake_64bit_fp/login.json`
 - **Windows:** `%APPDATA%\Roaming\eufyMake Studio Profile\cache\offline\user_info`
 - **Linux (Wine):** `~/.wine/drive_c/users/<name>/AppData/Roaming/eufyMake Studio Profile/cache/offline/user_info`
