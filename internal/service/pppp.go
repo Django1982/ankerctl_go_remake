@@ -598,7 +598,10 @@ func (s *PPPPService) drainAllXzyh(cli ppppConn) error {
 
 func (s *PPPPService) drainXzyh(channel byte, ch *protocol.Channel) error {
 	for {
-		header := ch.Peek(16, 0)
+		// Peek 12 bytes: enough to identify both AABB (Len at [8:12]) and
+		// XZYH (Len at [6:10]) frames. Using 16 would miss short AABB replies
+		// (e.g. 1-byte ACK = 12+1+2 = 15 bytes total).
+		header := ch.Peek(12, 0)
 		if len(header) == 0 {
 			return nil
 		}
