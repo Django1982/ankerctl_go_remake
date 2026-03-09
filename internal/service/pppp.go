@@ -440,7 +440,13 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		return fmt.Errorf("write aabb end: %w", err)
 	}
 
-	return waitReply()
+	// END ACK is best-effort: the printer has already queued the job and starts
+	// preheating regardless. If the ACK is lost (UDP) or the printer does not
+	// send one, we log a warning but treat the upload as successful.
+	if err := waitReply(); err != nil {
+		s.log.Warn("ppppservice: no END ACK from printer (print job already accepted)", "err", err)
+	}
+	return nil
 }
 
 // WorkerStart establishes the PPPP client.
