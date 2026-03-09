@@ -22,6 +22,8 @@ bin/
 obj/
 dist/
 vendor/
+!internal/web/static/vendor/
+!internal/web/static/vendor/**
 
 # Databases
 *.db

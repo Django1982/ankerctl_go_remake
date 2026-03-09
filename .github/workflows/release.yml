@@ -9,8 +9,64 @@ permissions:
   contents: write
 
 jobs:
+  smoke-test-web-ui:
+    name: Smoke test embedded web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Prepare embedded web vendor assets
+        run: bash scripts/prepare-web-vendor.sh
+
+      - name: Build linux test binary
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build \
+            -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+            -o ankerctl-test \
+            ./cmd/ankerctl/
+
+      - name: Verify embedded frontend assets
+        run: |
+          set -euo pipefail
+          cfg_dir="$(mktemp -d)"
+
+          ./ankerctl-test --config "$cfg_dir" webserver --listen 127.0.0.1:4470 >webserver.log 2>&1 &
+          pid=$!
+
+          cleanup() {
+            kill "$pid" >/dev/null 2>&1 || true
+            wait "$pid" >/dev/null 2>&1 || true
+            rm -rf "$cfg_dir"
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:4470/api/health" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS "http://127.0.0.1:4470/" | grep -q "ankerctl"
+          page="$(curl -fsS "http://127.0.0.1:4470/")"
+          printf "%s" "$page" | grep -q "ankerctl"
+
+          printf "%s" "$page" | grep -Eo '/static/[^" ]+' | sort -u > static-assets.txt
+          while read -r asset; do
+            curl -fsS "http://127.0.0.1:4470${asset}" >/dev/null
+          done < static-assets.txt
+
+          curl -fsS "http://127.0.0.1:4470/static/ankersrv.css" | grep -q "nav-tabs"
+          curl -fsS "http://127.0.0.1:4470/static/ankersrv.js" | grep -q "fetch"
   build:
     name: Build
+    needs: smoke-test-web-ui
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -37,6 +93,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Prepare embedded web vendor assets
+        run: bash scripts/prepare-web-vendor.sh
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -48,10 +107,27 @@ jobs:
             -o ankerctl-${{ matrix.suffix }} \
             ./cmd/ankerctl/
 
+      - name: Package release artifact
+        run: |
+          set -euo pipefail
+          name="ankerctl-${{ matrix.suffix }}"
+          mkdir -p package
+          cp "$name" package/
+          cp README.md package/
+          cp -R internal/web/static package/web-static/
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            (cd package && zip -9 -r "../$name.zip" .)
+          else
+            tar -C package -czf "$name.tar.gz" .
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: ankerctl-${{ matrix.suffix }}
-          path: ankerctl-${{ matrix.suffix }}
+          path: |
+            ankerctl-${{ matrix.suffix }}
+            ankerctl-${{ matrix.suffix }}.tar.gz
+            ankerctl-${{ matrix.suffix }}.zip
 
   release:
     name: Release
@@ -66,7 +142,14 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts/
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum ankerctl-* > SHA256SUMS.txt
+
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/ankerctl-*
+          files: |
+            artifacts/ankerctl-*
+            artifacts/SHA256SUMS.txt
