@@ -6,7 +6,7 @@ toolchain go1.24.4
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
-	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/cobra v1.10.2
