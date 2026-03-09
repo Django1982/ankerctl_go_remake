@@ -471,7 +471,15 @@ func (h *Handler) UploadRateUpdate(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to update upload rate")
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "upload_rate_mbps": rate})
+	// Python parity: return both the stored rate and the effective rate (which
+	// may differ due to env override).
+	effectiveRate, effectiveSource := model.ResolveUploadRateMbpsWithSource(rate, 0)
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"status":                       "ok",
+		"upload_rate_mbps":             rate,
+		"effective_upload_rate_mbps":    effectiveRate,
+		"effective_upload_rate_source":  effectiveSource,
+	})
 }
 
 // discoverAndPersistPrinterIPs runs LAN broadcast discovery for each printer

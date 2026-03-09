@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/django1982/ankerctl/internal/model"
 )
 
 func parseBoolHTTP(v string) bool {
@@ -82,5 +84,16 @@ func (h *Handler) SlicerUpload(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]any{})
+
+	// Python parity: return effective rate and source after successful upload.
+	cfgRate := 0
+	if cfg != nil {
+		cfgRate = cfg.UploadRateMbps
+	}
+	effectiveRate, rateSource := model.ResolveUploadRateMbpsWithSource(cfgRate, 0)
+	h.writeJSON(w, http.StatusOK, map[string]any{
+		"status":             "ok",
+		"upload_rate_mbps":   effectiveRate,
+		"upload_rate_source": rateSource,
+	})
 }

@@ -1,12 +1,33 @@
 package model
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 // DefaultUploadRateMbps is the default upload speed limit.
 const DefaultUploadRateMbps = 10
 
 // UploadRateMbpsChoices are the valid upload rate options.
 var UploadRateMbpsChoices = []int{5, 10, 25, 50, 100}
+
+// ResolveUploadRateMbpsWithSource returns the effective upload rate and a source
+// string indicating where the value came from: "override", "env", "config", or "default".
+// This mirrors Python's cli.util.resolve_upload_rate_mbps_with_source.
+func ResolveUploadRateMbpsWithSource(cfgRate int, override int) (int, string) {
+	if override > 0 {
+		return override, "override"
+	}
+	if envVal := os.Getenv("UPLOAD_RATE_MBPS"); envVal != "" {
+		if rate, err := strconv.Atoi(envVal); err == nil && rate > 0 {
+			return rate, "env"
+		}
+	}
+	if cfgRate > 0 {
+		return cfgRate, "config"
+	}
+	return DefaultUploadRateMbps, "default"
+}
 
 // AppriseEvents holds the enabled/disabled state for each notification event.
 type AppriseEvents struct {
