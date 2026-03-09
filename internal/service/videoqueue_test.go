@@ -112,3 +112,53 @@ func TestVideoQueueSetProfile(t *testing.T) {
 		t.Fatalf("last mode = %d, want 0", mode)
 	}
 }
+
+func TestVideoQueueEnableRecoversDormantRunningWorker(t *testing.T) {
+	controller := &mockVideoController{}
+	q := NewVideoQueue(controller, nil)
+	t.Cleanup(q.Shutdown)
+
+	q.Start(context.Background())
+	waitForVideoState(t, q, StateRunning, 500*time.Millisecond)
+
+	controller.mu.Lock()
+	starts := controller.start
+	controller.mu.Unlock()
+	if starts != 0 {
+		t.Fatalf("start count before enable = %d, want 0", starts)
+	}
+
+	q.SetVideoEnabled(true)
+	waitForVideoControllerStart(t, controller, 1500*time.Millisecond)
+}
+
+func waitForVideoState(t *testing.T, q *VideoQueue, want RunState, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if q.State() == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("state = %v, want %v", q.State(), want)
+}
+
+func waitForVideoControllerStart(t *testing.T, controller *mockVideoController, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		controller.mu.Lock()
+		starts := controller.start
+		controller.mu.Unlock()
+		if starts > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	controller.mu.Lock()
+	starts := controller.start
+	controller.mu.Unlock()
+	t.Fatalf("start count = %d, want > 0", starts)
+}

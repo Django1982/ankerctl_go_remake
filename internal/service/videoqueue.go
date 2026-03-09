@@ -151,8 +151,13 @@ func (q *VideoQueue) SetVideoEnabled(enabled bool) {
 	q.mu.Unlock()
 
 	if enabled {
-		if q.State() == StateStopped {
+		switch q.State() {
+		case StateStopped:
 			q.Start(context.Background())
+		default:
+			// Recover from a worker that was started while video was still
+			// disabled (for example via a prior Borrow on videoqueue).
+			q.Restart()
 		}
 		return
 	}

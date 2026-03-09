@@ -46,6 +46,7 @@ type mockService struct {
 
 	videoEnabled bool
 	connected    bool
+	startCalls   int
 
 	lightCalls  []bool
 	profileCall []string
@@ -72,6 +73,7 @@ func (s *mockService) State() service.RunState {
 }
 func (s *mockService) Start(context.Context) {
 	s.mu.Lock()
+	s.startCalls++
 	s.state = service.StateRunning
 	s.mu.Unlock()
 }
@@ -431,6 +433,27 @@ func TestCtrlHandler_AuthAndCommands(t *testing.T) {
 		t.Fatalf("expected quality/mode 1 call")
 	}
 	video.mu.Unlock()
+}
+
+func TestCtrlHandleVideoEnabled_DoesNotBorrowService(t *testing.T) {
+	mgr := service.NewServiceManager()
+	video := newMockService("videoqueue")
+	mgr.Register(video)
+
+	h := New(mgr, testState{loggedIn: true, video: true}, nil)
+	resp := h.handleCtrlCommand([]byte(`{"video_enabled":true}`))
+	if resp != nil {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+
+	video.mu.Lock()
+	defer video.mu.Unlock()
+	if len(video.enableCalls) != 1 || !video.enableCalls[0] {
+		t.Fatalf("enable calls = %v, want [true]", video.enableCalls)
+	}
+	if video.startCalls != 0 {
+		t.Fatalf("start calls = %d, want 0", video.startCalls)
+	}
 }
 
 func TestCtrlHandler_RejectsWhenNotLoggedIn(t *testing.T) {

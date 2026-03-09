@@ -284,11 +284,10 @@ func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
 		if !ok {
 			return map[string]any{"error": "video_enabled value must be boolean"}
 		}
-		svc, err := h.services.Borrow("videoqueue")
-		if err != nil {
+		svc, ok := h.services.Get("videoqueue")
+		if !ok {
 			return map[string]any{"error": "videoqueue unavailable"}
 		}
-		defer h.services.Return("videoqueue")
 		ve, ok := svc.(interface{ SetVideoEnabled(bool) })
 		if !ok {
 			return map[string]any{"error": "videoqueue does not support enable control"}
