@@ -139,7 +139,10 @@ func runWebserver() error {
 	ft := service.NewFileTransferService(pppp, mqtt)
 	sm.Register(ft)
 
-	// 5. Web Server
+	// 5. Startup config validation + auto-repair (background, non-blocking).
+	checkAndRepairConfig(cfgMgr, printerIdx, database)
+
+	// 6. Web Server
 	webOpts := []web.Option{
 		web.WithDatabase(database),
 		web.WithServiceManager(sm),
