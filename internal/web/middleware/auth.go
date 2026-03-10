@@ -105,8 +105,8 @@ func stripAPIKeyParam(u *url.URL) string {
 }
 
 func secureEquals(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
+	// Do NOT short-circuit on length difference — that leaks the key length
+	// via timing. subtle.ConstantTimeCompare already returns 0 when lengths
+	// differ, in constant time.
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

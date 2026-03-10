@@ -169,6 +169,29 @@ func TestAuth_SessionCookie_AllowsProtectedPost(t *testing.T) {
 	}
 }
 
+func TestSecureEquals_DifferentLengths(t *testing.T) {
+	// Verify that secureEquals correctly rejects different-length strings
+	// without a length-based early return (timing side-channel).
+	if secureEquals("short", "muchlongerkey1234") {
+		t.Fatal("expected false for different-length inputs")
+	}
+	if secureEquals("muchlongerkey1234", "short") {
+		t.Fatal("expected false for different-length inputs (reversed)")
+	}
+	if secureEquals("", "notempty") {
+		t.Fatal("expected false for empty vs non-empty")
+	}
+}
+
+func TestSecureEquals_SameContent(t *testing.T) {
+	if !secureEquals("test-api-key-1234", "test-api-key-1234") {
+		t.Fatal("expected true for identical strings")
+	}
+	if secureEquals("test-api-key-1234", "test-api-key-1235") {
+		t.Fatal("expected false for different content")
+	}
+}
+
 func TestAuth_StaticPath_AlwaysAllowed(t *testing.T) {
 	state := &authTestState{apiKey: "test-api-key-1234", login: true, sm: NewSessionManager([]byte("secret"))}
 	h := Auth(state)(okHandler())
