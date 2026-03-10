@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -288,7 +289,15 @@ func (c *Channel) Read(nbytes int, timeout time.Duration) []byte {
 }
 
 // Write schedules outbound payload split into 1024-byte DRW chunks.
+// For cancellable blocking writes, use WriteContext instead.
 func (c *Channel) Write(payload []byte, block bool) (CyclicU16, CyclicU16, error) {
+	return c.WriteContext(context.Background(), payload, block)
+}
+
+// WriteContext schedules outbound payload split into 1024-byte DRW chunks.
+// When block is true, it waits for all chunks to be ACKed. The wait loop
+// respects ctx cancellation so that hung uploads can be aborted.
+func (c *Channel) WriteContext(ctx context.Context, payload []byte, block bool) (CyclicU16, CyclicU16, error) {
 	c.mu.Lock()
 	start := c.txCtr
 	deadline := time.Now()
@@ -320,7 +329,14 @@ func (c *Channel) Write(payload []byte, block bool) (CyclicU16, CyclicU16, error
 		if acked {
 			break
 		}
-		c.Wait(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return start, done, ctx.Err()
+		case <-c.eventCh:
+			// state changed, re-check
+		case <-time.After(250 * time.Millisecond):
+			// poll timeout, re-check
+		}
 	}
 
 	return start, done, nil

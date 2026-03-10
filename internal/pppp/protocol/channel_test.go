@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -66,6 +67,55 @@ func TestChannelInFlightWindow(t *testing.T) {
 	pkts = ch.Poll(time.Now())
 	if len(pkts) == 0 {
 		t.Fatalf("expected additional packets after ack")
+	}
+}
+
+func TestChannelWriteContextCancellation(t *testing.T) {
+	ch := NewChannel(5)
+
+	// Write a large payload that requires many ACKs.
+	data := make([]byte, 1024*4)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel immediately so the blocking wait should abort.
+	cancel()
+
+	_, _, err := ch.WriteContext(ctx, data, true)
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestChannelWriteContextSuccess(t *testing.T) {
+	ch := NewChannel(6)
+	ch.timeout = 10 * time.Millisecond
+
+	ctx := context.Background()
+	data := []byte("hello")
+
+	// Non-blocking write: enqueue packet 0.
+	start, done, err := ch.WriteContext(ctx, data, false)
+	if err != nil {
+		t.Fatalf("non-blocking write failed: %v", err)
+	}
+	_ = done
+
+	// ACK packet 0 so txAck advances to 1.
+	ch.RXAck([]uint16{uint16(start)})
+
+	// Second write will be index 1. ACK it from a goroutine after a short delay
+	// so that the blocking WriteContext below can return.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		ch.RXAck([]uint16{1})
+	}()
+
+	_, _, err = ch.WriteContext(ctx, []byte("x"), true)
+	if err != nil {
+		t.Fatalf("blocking write failed: %v", err)
 	}
 }
 
