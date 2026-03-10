@@ -10,13 +10,14 @@
 # ---------------------------------------------------------------------------
 FROM golang:1.24-alpine AS builder
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git curl bash
 
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+RUN bash scripts/prepare-web-vendor.sh
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags "-s -w -X main.Version=${VERSION}" \
