@@ -320,6 +320,10 @@ func (c *Client) process(msg any) {
 	case protocol.Message:
 		// Fallback for unhandled typed packets that decode to raw Message.
 		switch m.Type {
+		case protocol.TypeClose:
+			// Defensive fallback: if Close arrives as raw Message instead of
+			// the typed protocol.Close, still handle it.
+			c.setState(StateDisconnected)
 		case protocol.TypeDevLgnCRC:
 			// Printer device login with CRC — respond with DevLgnAckCrc.
 			// Python reference: ppppapi.py process() DEV_LGN_CRC handler.

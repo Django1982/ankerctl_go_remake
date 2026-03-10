@@ -122,10 +122,13 @@ func TestLANHandshakePunchPkt(t *testing.T) {
 	duid := protocol.Duid{Prefix: "EUPRAKM", Serial: 100001, Check: "ABCDE"}
 	printerAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 1, 100), Port: PPPPLANPort}
 
+	// Build the printer's PunchPkt response (step 2).
 	punchPktRaw, err := protocol.EncodePacket(protocol.PunchPkt{DUID: duid})
 	if err != nil {
 		t.Fatalf("encode PunchPkt: %v", err)
 	}
+
+	// Build the printer's P2pRdy response (step 4).
 	p2pRdyRaw, err := protocol.EncodePacket(protocol.P2pRdy{DUID: duid})
 	if err != nil {
 		t.Fatalf("encode P2pRdy: %v", err)
@@ -139,6 +142,7 @@ func TestLANHandshakePunchPkt(t *testing.T) {
 	}
 	cli := NewClient(mock, duid, printerAddr)
 
+	// Start LAN handshake — sets state to Connecting.
 	if err := cli.ConnectLANSearch(); err != nil {
 		t.Fatalf("ConnectLANSearch: %v", err)
 	}
