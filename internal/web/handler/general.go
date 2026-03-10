@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/django1982/ankerctl/internal/model"
+	"github.com/django1982/ankerctl/internal/service"
 )
 
 // Root serves the web UI placeholder.
@@ -157,9 +158,81 @@ func (h *Handler) Version(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]string{"api": "0.1", "server": "1.9.0", "text": "OctoPrint 1.9.0"})
 }
 
-// Video streams camera output; phase-10 keeps this as explicit TODO.
-func (h *Handler) Video(w http.ResponseWriter, _ *http.Request) {
-	h.writeError(w, http.StatusNotImplemented, "video stream not implemented")
+// Video streams H.264 frames from the VideoQueue as a chunked video/mp4 response.
+// Mirrors Python web/__init__.py:video_download().
+func (h *Handler) Video(w http.ResponseWriter, r *http.Request) {
+	forTimelapse := r.URL.Query().Get("for_timelapse") == "1"
+
+	// Check that a printer is configured.
+	cfg, _ := h.loadConfig()
+	if cfg == nil || !cfg.IsConfigured() {
+		return // empty response, matching Python's generate() that yields nothing
+	}
+
+	if h.svc == nil {
+		return
+	}
+
+	// Look up videoqueue.
+	vq, ok := h.videoQueue()
+	if !ok {
+		return
+	}
+
+	// Unless this is a timelapse capture, require video_enabled.
+	if !forTimelapse && !vq.VideoEnabled() {
+		return
+	}
+
+	// If the service is stopped, try to start it via Borrow.
+	if vq.State() == service.StateStopped {
+		if _, err := h.svc.Borrow("videoqueue"); err != nil {
+			return
+		}
+		defer h.svc.Return("videoqueue")
+	}
+
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, canFlush := w.(http.Flusher)
+
+	frameCh := make(chan []byte, 64)
+	unsub := vq.Tap(func(v any) {
+		switch msg := v.(type) {
+		case service.VideoFrameEvent:
+			frame := append([]byte(nil), msg.Frame...)
+			select {
+			case frameCh <- frame:
+			default:
+				// Drop when HTTP writer can't keep up.
+			}
+		case []byte:
+			frame := append([]byte(nil), msg...)
+			select {
+			case frameCh <- frame:
+			default:
+			}
+		}
+	})
+	defer unsub()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case frame := <-frameCh:
+			if _, err := w.Write(frame); err != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+	}
 }
 
 // Snapshot captures a JPEG from VideoQueue and serves it as attachment.

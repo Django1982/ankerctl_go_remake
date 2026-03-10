@@ -51,7 +51,10 @@ func (h *Handler) DebugConfig(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		DebugLogging *bool `json:"debug_logging"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&payload)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	if payload.DebugLogging != nil {
 		if mqtt, ok := h.mqttQueue(); ok {
 			mqtt.SetDebugLogging(*payload.DebugLogging)
@@ -70,7 +73,10 @@ func (h *Handler) DebugSimulate(w http.ResponseWriter, r *http.Request) {
 		Type    string         `json:"type"`
 		Payload map[string]any `json:"payload"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&payload)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
 	if mqtt, ok := h.mqttQueue(); ok {
 		mqtt.SimulateEvent(payload.Type, payload.Payload)
 	}

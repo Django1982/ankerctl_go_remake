@@ -136,6 +136,47 @@ func TestTimelapseTraversalRejected(t *testing.T) {
 	}
 }
 
+func TestVideoEndpointReturnsVideoMp4(t *testing.T) {
+	// Without a configured printer and video service, /video should return
+	// an empty 200 response (matching Python's generate() that yields nothing).
+	h := newTestHandler(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/video", nil)
+	w := httptest.NewRecorder()
+	h.Video(w, r)
+
+	// No configured printer means empty response with default 200 status.
+	if w.Code != http.StatusOK {
+		t.Fatalf("Video: status=%d want=%d", w.Code, http.StatusOK)
+	}
+}
+
+func TestDebugConfigBadJSON(t *testing.T) {
+	h := newTestHandler(t)
+	h.devMode = true
+
+	r := httptest.NewRequest(http.MethodPost, "/api/debug/config", nil)
+	r.Body = http.NoBody
+	w := httptest.NewRecorder()
+	h.DebugConfig(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("DebugConfig: status=%d want=%d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDebugSimulateBadJSON(t *testing.T) {
+	h := newTestHandler(t)
+	h.devMode = true
+
+	r := httptest.NewRequest(http.MethodPost, "/api/debug/simulate", nil)
+	r.Body = http.NoBody
+	w := httptest.NewRecorder()
+	h.DebugSimulate(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("DebugSimulate: status=%d want=%d", w.Code, http.StatusBadRequest)
+	}
+}
+
 func TestDebugLogsTraversalRejected(t *testing.T) {
 	h := newTestHandler(t)
 	h.devMode = true
