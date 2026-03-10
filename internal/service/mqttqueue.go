@@ -180,7 +180,7 @@ func (q *MqttQueue) WorkerInit() {
 
 // WorkerStart opens and connects an MQTT client.
 func (q *MqttQueue) WorkerStart() error {
-	c, err := q.clientFactory(context.Background())
+	c, err := q.clientFactory(q.LoopContext())
 	if err != nil {
 		return err
 	}
@@ -556,7 +556,11 @@ func (q *MqttQueue) SendGCode(ctx context.Context, gcode string) error {
 		if err := c.Command(ctx, cmd); err != nil {
 			return fmt.Errorf("mqttqueue: send gcode: %w", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	return nil
 }

@@ -101,6 +101,18 @@ func (w *BaseWorker) Name() string {
 	return w.name
 }
 
+// LoopContext returns the lifecycle context used by the worker run loop.
+// WorkerStart implementations should use this instead of context.Background()
+// so that service startup is cancellable when a shutdown is requested.
+func (w *BaseWorker) LoopContext() context.Context {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.loopCtx != nil {
+		return w.loopCtx
+	}
+	return context.Background()
+}
+
 // State returns the current lifecycle state.
 func (w *BaseWorker) State() RunState {
 	w.mu.Lock()

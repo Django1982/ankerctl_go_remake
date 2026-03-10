@@ -23,6 +23,48 @@ func TestIsServiceRestartSignal(t *testing.T) {
 	}
 }
 
+func TestLoopContextDefaultsToBackground(t *testing.T) {
+	w := NewBaseWorker("loop-ctx-test")
+	ctx := w.LoopContext()
+	if ctx == nil {
+		t.Fatal("LoopContext() returned nil")
+	}
+	// Before Start(), should return context.Background() (never cancelled).
+	select {
+	case <-ctx.Done():
+		t.Fatal("expected LoopContext to not be cancelled before Start()")
+	default:
+	}
+}
+
+func TestLoopContextReflectsStartContext(t *testing.T) {
+	w := newTestWorker("loop-ctx-worker")
+	w.restartOn = -1
+	defer w.Shutdown()
+
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.Start(parentCtx)
+	waitForState(t, w, StateRunning, 2*time.Second)
+
+	loopCtx := w.LoopContext()
+	select {
+	case <-loopCtx.Done():
+		t.Fatal("expected LoopContext to not be cancelled while running")
+	default:
+	}
+
+	// After Shutdown(), LoopContext should be cancelled.
+	w.Shutdown()
+	select {
+	case <-loopCtx.Done():
+		// expected
+	default:
+		t.Fatal("expected LoopContext to be cancelled after Shutdown()")
+	}
+}
+
 func TestWorkerLifecycleStateMachine(t *testing.T) {
 	w := newTestWorker("lifecycle-worker")
 	w.restartOn = -1

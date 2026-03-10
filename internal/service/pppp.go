@@ -296,7 +296,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		if err != nil {
 			return err
 		}
-		if _, _, err := ch.Write(xb, true); err != nil {
+		if _, _, err := ch.WriteContext(ctx, xb, true); err != nil {
 			return err
 		}
 		return nil
@@ -388,7 +388,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 	if err != nil {
 		return err
 	}
-	if _, _, err := ch.Write(bp, true); err != nil {
+	if _, _, err := ch.WriteContext(ctx, bp, true); err != nil {
 		return fmt.Errorf("write aabb begin: %w", err)
 	}
 	if err := waitReply(); err != nil {
@@ -413,7 +413,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		if err != nil {
 			return err
 		}
-		if _, _, err := ch.Write(dp, true); err != nil {
+		if _, _, err := ch.WriteContext(ctx, dp, true); err != nil {
 			return fmt.Errorf("write aabb data at %d: %w", pos, err)
 		}
 
@@ -436,7 +436,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 	if err != nil {
 		return err
 	}
-	if _, _, err := ch.Write(ep, true); err != nil {
+	if _, _, err := ch.WriteContext(ctx, ep, true); err != nil {
 		return fmt.Errorf("write aabb end: %w", err)
 	}
 
@@ -451,7 +451,7 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 
 // WorkerStart establishes the PPPP client.
 func (s *PPPPService) WorkerStart() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(s.LoopContext(), 5*time.Second)
 	defer cancel()
 
 	cli, err := s.clientFactor(ctx)
