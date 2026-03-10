@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/django1982/ankerctl/internal/httpapi"
+	"github.com/django1982/ankerctl/internal/logging"
 	"github.com/django1982/ankerctl/internal/model"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
@@ -497,11 +498,11 @@ func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
 			defer cancel()
 			ip, err := ppppclient.DiscoverLANIP(ctx, p.P2PDUID)
 			if err != nil {
-				slog.Warn("background IP discovery failed", "duid", p.P2PDUID, "error", err)
+				slog.Warn("background IP discovery failed", "duid", logging.RedactID(p.P2PDUID, 4), "error", err)
 				return
 			}
 			ipStr := ip.String()
-			slog.Info("background IP discovery succeeded", "duid", p.P2PDUID, "sn", p.SN, "ip", ipStr)
+			slog.Info("background IP discovery succeeded", "duid", logging.RedactID(p.P2PDUID, 4), "sn", p.SN, "ip", ipStr)
 			if h.cfg != nil {
 				_ = h.cfg.Modify(func(saved *model.Config) (*model.Config, error) {
 					if saved == nil {

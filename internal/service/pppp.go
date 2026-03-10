@@ -15,6 +15,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/logging"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
 	"github.com/google/uuid"
@@ -94,7 +95,7 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int, database
 		// source address; the DUID filter ensures we latch onto the right
 		// printer even when multiple AnkerMake devices are on the network.
 		if knownIP := printer.IPAddr; knownIP != "" {
-			slog.Info("ppppservice: known IP in config (broadcasting for handshake)", "ip", knownIP, "duid", printer.P2PDUID)
+			slog.Info("ppppservice: known IP in config (broadcasting for handshake)", "ip", knownIP, "duid", logging.RedactID(printer.P2PDUID, 4))
 		} else if database != nil && printer.SN != "" {
 			if cachedIP, dbErr := database.GetPrinterIP(printer.SN); dbErr == nil && cachedIP != "" {
 				slog.Info("ppppservice: known cached IP (broadcasting for handshake)", "ip", cachedIP, "sn", printer.SN)
@@ -109,7 +110,7 @@ func defaultPPPPClientFactory(cfgMgr *config.Manager, printerIndex int, database
 			_ = cli.Close()
 			return nil, fmt.Errorf("ppppservice: connect lan search: %w", err)
 		}
-		slog.Info("ppppservice: LanSearch broadcast sent, awaiting PunchPkt", "duid", printer.P2PDUID)
+		slog.Info("ppppservice: LanSearch broadcast sent, awaiting PunchPkt", "duid", logging.RedactID(printer.P2PDUID, 4))
 		return cli, nil
 	}
 }

@@ -59,6 +59,47 @@ func Redact(in map[string]any) map[string]any {
 	return out
 }
 
+// RedactID redacts a device identifier string, preserving only the last n
+// characters so log entries remain useful for correlation without exposing the
+// full value.  For example RedactID("EUPRAKM-010389-ETVLC", 4) returns
+// "...-TVLC".  If n >= len(id) the whole value is returned unchanged.
+func RedactID(id string, keepSuffix int) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "<empty>"
+	}
+	r := []rune(id)
+	if keepSuffix <= 0 {
+		return "..."
+	}
+	if keepSuffix >= len(r) {
+		return id
+	}
+	return "..." + string(r[len(r)-keepSuffix:])
+}
+
+// RedactEmail redacts an email address, preserving only the first 2 characters
+// of the local part and masking the rest.  For example
+// RedactEmail("user@example.com") returns "us***@example.com".
+// If the value is not a well-formed email it falls back to RedactID with 2
+// chars preserved.
+func RedactEmail(email string) string {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return "<empty>"
+	}
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 {
+		return RedactID(email, 2)
+	}
+	local := []rune(parts[0])
+	const keep = 2
+	if len(local) <= keep {
+		return email // too short to redact meaningfully
+	}
+	return string(local[:keep]) + "***@" + parts[1]
+}
+
 func redactValue(v any) string {
 	if v == nil {
 		return "<nil>"
