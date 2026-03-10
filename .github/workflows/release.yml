@@ -60,26 +60,27 @@ jobs:
           fi
 
           page="$(curl -fsS "http://127.0.0.1:4470/")"
-          printf "%s" "$page" | grep -q "ankerctl"
+          # Use herestring/grep-from-file to avoid SIGPIPE with pipefail
+          grep -q "ankerctl" <<< "$page"
 
           # Verify all static assets referenced in the HTML are served
-          printf "%s" "$page" | grep -Eo '/static/[^" ]+' | sort -u > static-assets.txt
+          grep -Eo '/static/[^" ]+' <<< "$page" | sort -u > static-assets.txt
           while read -r asset; do
             curl -fsS "http://127.0.0.1:4470${asset}" >/dev/null
           done < static-assets.txt
 
           # Explicitly verify custom assets
-          curl -fsS "http://127.0.0.1:4470/static/ankersrv.css" | grep -q "nav-tabs"
-          curl -fsS "http://127.0.0.1:4470/static/ankersrv.js" | grep -q "fetch"
+          grep -q "nav-tabs" < <(curl -fsS "http://127.0.0.1:4470/static/ankersrv.css")
+          grep -q "fetch"    < <(curl -fsS "http://127.0.0.1:4470/static/ankersrv.js")
 
           # Explicitly verify all embedded vendor assets (catches missing vendor download)
-          curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-5.3.0-alpha3-dist/css/bootstrap.min.css" | grep -q "bootstrap"
-          curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-5.3.0-alpha3-dist/js/bootstrap.bundle.min.js" | grep -q "bootstrap"
-          curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-icons-1.10.5/font/bootstrap-icons.min.css" | grep -q "bootstrap-icons"
+          grep -q "bootstrap"       < <(curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-5.3.0-alpha3-dist/css/bootstrap.min.css")
+          grep -q "bootstrap"       < <(curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-5.3.0-alpha3-dist/js/bootstrap.bundle.min.js")
+          grep -q "bootstrap-icons" < <(curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-icons-1.10.5/font/bootstrap-icons.min.css")
           curl -fsS "http://127.0.0.1:4470/static/vendor/bootstrap-icons-1.10.5/font/fonts/bootstrap-icons.woff2" >/dev/null
-          curl -fsS "http://127.0.0.1:4470/static/vendor/cash.min.js" | grep -q "cash"
+          grep -q "cash"  < <(curl -fsS "http://127.0.0.1:4470/static/vendor/cash.min.js")
           curl -fsS "http://127.0.0.1:4470/static/vendor/jmuxer.min.js" >/dev/null
-          curl -fsS "http://127.0.0.1:4470/static/vendor/chart.umd.min.js" | grep -q "Chart"
+          grep -q "Chart" < <(curl -fsS "http://127.0.0.1:4470/static/vendor/chart.umd.min.js")
   build:
     name: Build
     needs: smoke-test-web-ui
