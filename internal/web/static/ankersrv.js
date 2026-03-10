@@ -321,12 +321,20 @@ $(function () {
                 }
                 if (data.progress !== undefined) {
                     const progress = Math.min(100, getPercentage(data.progress));
-                    $("#progressbar").attr("aria-valuenow", progress);
-                    $("#progressbar").attr("style", `width: ${progress}%`);
-                    $("#progress").text(`${progress}%`);
-                    document.title = progress > 0 && progress < 100
-                        ? `\u{1F5A8}\uFE0F ${progress}% | ankerctl`
-                        : "ankerctl";
+                    // Ignore transient progress=0 packets the printer may send during
+                    // pause/resume state transitions — they cause the bar to jump to 0%
+                    // and back. Only allow 0 when the printer is truly idle (ct=1000 value=0).
+                    const isSpuriousZero = progress === 0 && _lastDisplayedProgress > 2 &&
+                        _currentPrintState !== PRINT_STATE.IDLE;
+                    if (!isSpuriousZero) {
+                        _lastDisplayedProgress = progress;
+                        $("#progressbar").attr("aria-valuenow", progress);
+                        $("#progressbar").attr("style", `width: ${progress}%`);
+                        $("#progress").text(`${progress}%`);
+                        document.title = progress > 0 && progress < 100
+                            ? `\u{1F5A8}\uFE0F ${progress}% | ankerctl`
+                            : "ankerctl";
+                    }
                 }
             } else if (data.commandType == 1003) {
                 // Returns Nozzle Temp
@@ -376,6 +384,7 @@ $(function () {
                 const baseName = filePath.split("/").pop().split("\\").pop();
                 if (baseName) { $("#print-name").text(baseName); }
                 // Reset progress bar so stale values from a previous print don't show
+                _lastDisplayedProgress = 0;
                 $("#progressbar").attr("aria-valuenow", 0).attr("style", "width: 0%");
                 $("#progress").text("0%");
                 document.title = "ankerctl";
@@ -389,6 +398,7 @@ $(function () {
         },
 
         close: function () {
+            _lastDisplayedProgress = 0;
             $("#print-name").text("");
             $("#time-elapsed").text("00:00:00");
             $("#time-remain").text("00:00:00");
@@ -909,6 +919,7 @@ $(function () {
     const PRINT_STATE = { IDLE: 0, PRINTING: 1, PAUSED: 2, CALIBRATING: 8 };
 
     let _currentPrintState = PRINT_STATE.IDLE;
+    let _lastDisplayedProgress = 0;
 
     function _updatePrintControlButtons(state) {
         _currentPrintState = state;
