@@ -366,11 +366,19 @@ $(function () {
                         `<div class="progress-bar progress-bar-striped progress-bar-animated" ` +
                         `style="width:${pct}%" aria-valuenow="${pct}"></div></div></div>`;
                 }
+            } else if (data.commandType == 1043) {
+                // GCode command response — printer echoes back result text
+                const result = data.cmdResult || data.result || "";
+                if (result) { gcodeLog(`↩ ${result}`); }
             } else if (data.commandType == 1044) {
-                // Print start notification — extract basename from filePath
+                // Print start notification — extract basename from filePath, reset progress
                 const filePath = data.filePath || "";
                 const baseName = filePath.split("/").pop().split("\\").pop();
-                $("#print-name").text(baseName);
+                if (baseName) { $("#print-name").text(baseName); }
+                // Reset progress bar so stale values from a previous print don't show
+                $("#progressbar").attr("aria-valuenow", 0).attr("style", "width: 0%");
+                $("#progress").text("0%");
+                document.title = "ankerctl";
             } else if (data.commandType == 1052) {
                 // Returns Layer Info — layer display only; progress comes from ct=1001
                 const layer = `${data.real_print_layer} / ${data.total_layer}`;
@@ -1693,7 +1701,7 @@ $(function () {
         if (confirm("Are you sure you want to stop the print? This will also turn off heaters.")) {
             sendPrintControl(PRINT_CONTROL.STOP);
             sendPrinterGCode("M104 S0\nM140 S0\nM106 S0");
-            _updatePrintControlButtons(PRINT_STATE.IDLE);
+            // Do NOT pre-emptively set IDLE — wait for printer to confirm via ct=1000 value=0
         }
         return false;
     });
