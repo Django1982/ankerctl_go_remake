@@ -1698,9 +1698,11 @@ $(function () {
         return false;
     });
     $("#print-stop").on("click", function () {
-        if (confirm("Are you sure you want to stop the print? This will also turn off heaters.")) {
+        if (confirm("Are you sure you want to stop the print?")) {
             sendPrintControl(PRINT_CONTROL.STOP);
-            sendPrinterGCode("M104 S0\nM140 S0\nM106 S0");
+            // Do NOT send M104/M140/M106 GCode alongside stop — the printer may interpret
+            // incoming GCode during stop-transition as a resume signal, cancelling the stop.
+            // The printer will cool down automatically after a confirmed stop.
             // Do NOT pre-emptively set IDLE — wait for printer to confirm via ct=1000 value=0
         }
         return false;
