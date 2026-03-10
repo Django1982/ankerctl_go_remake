@@ -184,6 +184,15 @@ func (c *Client) remoteAddr() *net.UDPAddr {
 	return &cp
 }
 
+// RemoteIP returns the printer's IP address as discovered via PunchPkt.
+// Returns nil if the handshake has not yet completed.
+func (c *Client) RemoteIP() net.IP {
+	if addr := c.remoteAddr(); addr != nil {
+		return addr.IP
+	}
+	return nil
+}
+
 func (c *Client) setRemoteAddr(addr *net.UDPAddr) {
 	c.mu.Lock()
 	c.addr = addr

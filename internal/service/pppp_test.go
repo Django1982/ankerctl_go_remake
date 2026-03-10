@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"testing"
 	"time"
 
@@ -35,7 +36,8 @@ func (f *fakePPPPConn) Run(ctx context.Context) error {
 		return f.runErr
 	}
 }
-func (f *fakePPPPConn) Close() error { return nil }
+func (f *fakePPPPConn) Close() error  { return nil }
+func (f *fakePPPPConn) RemoteIP() net.IP { return nil }
 func (f *fakePPPPConn) State() ppppclient.State {
 	return f.state
 }

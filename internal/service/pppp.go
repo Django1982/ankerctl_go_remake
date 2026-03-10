@@ -16,6 +16,7 @@ import (
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
 	"github.com/django1982/ankerctl/internal/logging"
+	"github.com/django1982/ankerctl/internal/model"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ type ppppConn interface {
 	Close() error
 	State() ppppclient.State
 	Channel(index int) (*protocol.Channel, error)
+	RemoteIP() net.IP
 }
 
 type ppppClientFactory func(ctx context.Context) (ppppConn, error)
@@ -40,6 +42,12 @@ type PPPPService struct {
 	clientMu     sync.Mutex
 	clientFactor ppppClientFactory
 	pollInterval time.Duration
+
+	// cfgMgr and database are used to persist the discovered printer IP
+	// back to default.json and the DB cache on every successful LAN connection.
+	cfgMgr     *config.Manager
+	database   *db.DB
+	printerSN  string
 
 	handlersMu    sync.RWMutex
 	handlers      map[byte][]func([]byte)
@@ -55,12 +63,23 @@ func NewPPPPService(cfg *config.Manager, printerIndex int) *PPPPService {
 // NewPPPPServiceWithDB creates a PPPP service that consults a DB cache for
 // the last-known printer IP before falling back to a LAN broadcast.
 func NewPPPPServiceWithDB(cfg *config.Manager, printerIndex int, database *db.DB) *PPPPService {
+	// Pre-load the printer SN for IP persistence (best-effort; empty SN disables persistence).
+	printerSN := ""
+	if cfg != nil {
+		if loaded, err := cfg.Load(); err == nil && loaded != nil && printerIndex >= 0 && printerIndex < len(loaded.Printers) {
+			printerSN = loaded.Printers[printerIndex].SN
+		}
+	}
+
 	s := &PPPPService{
 		BaseWorker:   NewBaseWorker("ppppservice"),
 		log:          slog.With("service", "ppppservice"),
 		pollInterval: 50 * time.Millisecond,
 		handlers:     make(map[byte][]func([]byte)),
 		aabbHandlers: make(map[byte][]func(protocol.Aabb, []byte)),
+		cfgMgr:       cfg,
+		database:     database,
+		printerSN:    printerSN,
 	}
 	s.clientFactor = defaultPPPPClientFactory(cfg, printerIndex, database)
 	s.BindHooks(s)
@@ -486,6 +505,7 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 	defer ticker.Stop()
 
 	connectDeadline := time.Now().Add(connectTimeout)
+	ipPersisted := false // persist discovered IP once per connection
 
 	for {
 		select {
@@ -511,6 +531,13 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 			}
 			// Once connected, reset deadline (not used further, but clean).
 			connectDeadline = time.Time{}
+			// Persist discovered printer IP on first successful connection.
+			if !ipPersisted {
+				if ip := cli.RemoteIP(); ip != nil {
+					s.persistPrinterIP(ip.String())
+					ipPersisted = true
+				}
+			}
 			if err := s.drainAllXzyh(cli); err != nil {
 				s.log.Warn("xzyh drain failed", "err", err)
 				return ErrServiceRestartSignal
@@ -530,6 +557,29 @@ func (s *PPPPService) WorkerStop() {
 			s.log.Warn("pppp close failed", "err", err)
 		}
 	}
+}
+
+// persistPrinterIP saves the discovered LAN IP back to default.json and the DB.
+// Called once per connection after the PPPP handshake completes.
+func (s *PPPPService) persistPrinterIP(ipStr string) {
+	if s.cfgMgr != nil && s.printerSN != "" {
+		if err := s.cfgMgr.Modify(func(saved *model.Config) (*model.Config, error) {
+			for i := range saved.Printers {
+				if saved.Printers[i].SN == s.printerSN {
+					saved.Printers[i].IPAddr = ipStr
+				}
+			}
+			return saved, nil
+		}); err != nil {
+			s.log.Warn("ppppservice: failed to persist printer IP to config", "ip", ipStr, "err", err)
+		}
+	}
+	if s.database != nil && s.printerSN != "" {
+		if err := s.database.SetPrinterIP(s.printerSN, ipStr); err != nil {
+			s.log.Warn("ppppservice: failed to persist printer IP to db", "ip", ipStr, "err", err)
+		}
+	}
+	s.log.Info("ppppservice: persisted printer IP", "ip", ipStr)
 }
 
 func (s *PPPPService) currentClient() ppppConn {

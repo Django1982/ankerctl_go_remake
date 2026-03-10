@@ -484,12 +484,13 @@ func (h *Handler) UploadRateUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // discoverAndPersistPrinterIPs runs LAN broadcast discovery for each printer
-// that has a P2P DUID but no known IP, and writes the result back to the
-// config file and the DB cache. Designed to be called in a background goroutine
-// after ConfigUpload or ConfigLogin.
+// that has a P2P DUID and writes the discovered IP back to the config file and
+// the DB cache. Always refreshes the IP (even if one is already stored) so that
+// stale addresses from DHCP reassignments are corrected automatically.
+// Designed to be called in a background goroutine after ConfigUpload or ConfigLogin.
 func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
 	for _, p := range printers {
-		if p.P2PDUID == "" || p.IPAddr != "" {
+		if p.P2PDUID == "" {
 			continue
 		}
 		p := p // capture for goroutine
@@ -504,20 +505,24 @@ func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
 			ipStr := ip.String()
 			slog.Info("background IP discovery succeeded", "duid", logging.RedactID(p.P2PDUID, 4), "sn", p.SN, "ip", ipStr)
 			if h.cfg != nil {
-				_ = h.cfg.Modify(func(saved *model.Config) (*model.Config, error) {
+				if err := h.cfg.Modify(func(saved *model.Config) (*model.Config, error) {
 					if saved == nil {
 						return nil, nil
 					}
 					for i := range saved.Printers {
-						if saved.Printers[i].SN == p.SN && saved.Printers[i].IPAddr == "" {
+						if saved.Printers[i].SN == p.SN {
 							saved.Printers[i].IPAddr = ipStr
 						}
 					}
 					return saved, nil
-				})
+				}); err != nil {
+					slog.Warn("background IP discovery: failed to persist to config", "sn", p.SN, "error", err)
+				}
 			}
 			if h.db != nil && p.SN != "" {
-				_ = h.db.SetPrinterIP(p.SN, ipStr)
+				if err := h.db.SetPrinterIP(p.SN, ipStr); err != nil {
+					slog.Warn("background IP discovery: failed to persist to db", "sn", p.SN, "error", err)
+				}
 			}
 		}()
 	}
