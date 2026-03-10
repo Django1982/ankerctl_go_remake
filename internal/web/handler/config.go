@@ -234,7 +234,7 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 	// the existing fallback logic (existing config, DB cache).
 	go h.discoverAndPersistPrinterIPs(cfg.Printers)
 
-	slog.Info("cloud login successful", "email", email, "region", region)
+	slog.Info("cloud login successful", "email", logging.RedactEmail(email), "region", region)
 	h.writeJSON(w, http.StatusOK, map[string]string{"redirect": "/api/ankerctl/server/reload"})
 }
 
