@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -286,6 +288,28 @@ func newAPIKeyCmd() *cobra.Command {
 				source = "environment variable ANKERCTL_API_KEY"
 			}
 			fmt.Printf("API key: %s  (source: %s)\n", display, source)
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "create",
+		Short: "Generate a random API key, save it, and print it once",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfgMgr, err := config.NewManager(configDir)
+			if err != nil {
+				return fmt.Errorf("config manager: %w", err)
+			}
+			raw := make([]byte, 24) // 24 bytes → 32 base64url chars
+			if _, err := rand.Read(raw); err != nil {
+				return fmt.Errorf("generate key: %w", err)
+			}
+			key := base64.RawURLEncoding.EncodeToString(raw)
+			if err := cfgMgr.SetAPIKey(key); err != nil {
+				return fmt.Errorf("save api key: %w", err)
+			}
+			fmt.Printf("API key: %s\n", key)
+			fmt.Println("Save this key — it will not be shown again.")
 			return nil
 		},
 	})
