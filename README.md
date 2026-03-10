@@ -34,6 +34,15 @@ A Go reimplementation of [ankerctl](https://github.com/ankermake/ankermake-m5-pr
 - **Debug tab** (enable with `ANKERCTL_DEV_MODE=true`) with state inspector, service health panel, event simulation, and log viewer
 - **Bed Level Map** -- reads the 7x7 bilinear compensation grid from the printer, renders it as a colour-coded heatmap
 
+## Requirements
+
+| Dependency | Required | Notes |
+|---|---|---|
+| **ffmpeg** | For timelapse | Must be in `$PATH`. Docker image includes it. Install: `apt install ffmpeg` / `brew install ffmpeg` |
+| Network access | Always | Printer and host must be on the same LAN segment |
+
+> **No other runtime dependencies.** The binary embeds the entire web UI.
+
 ## Quick Start
 
 ### Docker (recommended)
