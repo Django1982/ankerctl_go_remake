@@ -222,6 +222,90 @@ func newConfigCmd() *cobra.Command {
 		},
 	})
 
+	cmd.AddCommand(newAPIKeyCmd())
+
+	return cmd
+}
+
+// newAPIKeyCmd returns the "config api-key" sub-command with set/get/unset children.
+func newAPIKeyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "api-key",
+		Short: "Manage the API key used to authenticate web requests",
+	}
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "set <key>",
+		Short: "Save an API key to the config file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key := args[0]
+			if err := config.ValidateAPIKey(key); err != nil {
+				return err
+			}
+			cfgMgr, err := config.NewManager(configDir)
+			if err != nil {
+				return fmt.Errorf("config manager: %w", err)
+			}
+			if err := cfgMgr.SetAPIKey(key); err != nil {
+				return fmt.Errorf("save api key: %w", err)
+			}
+			fmt.Println("API key saved.")
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "get",
+		Short: "Print the currently configured API key (redacted)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfgMgr, err := config.NewManager(configDir)
+			if err != nil {
+				return fmt.Errorf("config manager: %w", err)
+			}
+			key, err := cfgMgr.ResolveAPIKey()
+			if err != nil {
+				return fmt.Errorf("resolve api key: %w", err)
+			}
+			if key == "" {
+				fmt.Println("No API key configured.")
+				return nil
+			}
+			// Show first 4 chars + *** so the user can confirm which key is active
+			// without revealing the full secret.
+			runes := []rune(key)
+			const keep = 4
+			var display string
+			if len(runes) <= keep {
+				display = strings.Repeat("*", len(runes))
+			} else {
+				display = string(runes[:keep]) + strings.Repeat("*", len(runes)-keep)
+			}
+			source := "config file"
+			if strings.TrimSpace(os.Getenv("ANKERCTL_API_KEY")) != "" {
+				source = "environment variable ANKERCTL_API_KEY"
+			}
+			fmt.Printf("API key: %s  (source: %s)\n", display, source)
+			return nil
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "unset",
+		Short: "Remove the API key from the config file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfgMgr, err := config.NewManager(configDir)
+			if err != nil {
+				return fmt.Errorf("config manager: %w", err)
+			}
+			if err := cfgMgr.RemoveAPIKey(); err != nil {
+				return fmt.Errorf("remove api key: %w", err)
+			}
+			fmt.Println("API key removed.")
+			return nil
+		},
+	})
+
 	return cmd
 }
 
