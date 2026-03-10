@@ -18,9 +18,9 @@ fetch "https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bun
 fetch "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.min.css" \
   "$vendor_root/bootstrap-icons-1.10.5/font/bootstrap-icons.min.css"
 fetch "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/fonts/bootstrap-icons.woff2" \
-  "$vendor_root/bootstrap-icons-1.10.5/fonts/bootstrap-icons.woff2"
+  "$vendor_root/bootstrap-icons-1.10.5/font/fonts/bootstrap-icons.woff2"
 fetch "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/fonts/bootstrap-icons.woff" \
-  "$vendor_root/bootstrap-icons-1.10.5/fonts/bootstrap-icons.woff"
+  "$vendor_root/bootstrap-icons-1.10.5/font/fonts/bootstrap-icons.woff"
 
 fetch "https://cdnjs.cloudflare.com/ajax/libs/cash/8.1.5/cash.min.js" \
   "$vendor_root/cash.min.js"
