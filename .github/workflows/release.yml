@@ -46,12 +46,18 @@ jobs:
           }
           trap cleanup EXIT
 
-          for _ in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:4470/api/health" >/dev/null; then
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:4470/api/health" >/dev/null 2>&1; then
+              ready=1
               break
             fi
             sleep 1
           done
+          if [ "$ready" -eq 0 ]; then
+            echo "=== webserver.log ===" && cat webserver.log || true
+            echo "Server did not become ready within 30s" && exit 1
+          fi
 
           page="$(curl -fsS "http://127.0.0.1:4470/")"
           printf "%s" "$page" | grep -q "ankerctl"
