@@ -70,7 +70,7 @@ jobs:
           done < static-assets.txt
 
           # Explicitly verify custom assets
-          grep -q "nav-tabs" < <(curl -fsS "http://127.0.0.1:4470/static/ankersrv.css")
+          grep -q "nav-pills" < <(curl -fsS "http://127.0.0.1:4470/static/ankersrv.css")
           grep -q "fetch"    < <(curl -fsS "http://127.0.0.1:4470/static/ankersrv.js")
 
           # Explicitly verify all embedded vendor assets (catches missing vendor download)
