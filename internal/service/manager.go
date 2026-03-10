@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 )
 
@@ -166,20 +165,5 @@ func keepVideoQueueRunning(name string, svc Service) bool {
 		return ve.VideoEnabled()
 	}
 
-	v := reflect.ValueOf(svc)
-	if v.Kind() == reflect.Pointer {
-		v = v.Elem()
-	}
-	if !v.IsValid() || v.Kind() != reflect.Struct {
-		return false
-	}
-
-	fields := []string{"video_enabled", "videoEnabled", "VideoEnabled"}
-	for _, fieldName := range fields {
-		field := v.FieldByName(fieldName)
-		if field.IsValid() && field.Kind() == reflect.Bool {
-			return field.Bool()
-		}
-	}
 	return false
 }
