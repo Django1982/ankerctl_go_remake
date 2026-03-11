@@ -310,6 +310,10 @@ $(function () {
             if (data.commandType == 1000) {
                 // Printer state machine: value=0 idle, value=1 printing, value=2 paused
                 _updatePrintControlButtons(data.value);
+                if (data.value === PRINT_STATE.IDLE && _preparing) {
+                    _preparing = false;
+                    $("#progressbar").removeClass("progress-bar-striped progress-bar-animated");
+                }
                 if (typeof _onMqttStateChange === "function") {
                     _onMqttStateChange(data.value);
                 }
@@ -327,6 +331,10 @@ $(function () {
                     const isSpuriousZero = progress === 0 && _lastDisplayedProgress > 2 &&
                         _currentPrintState !== PRINT_STATE.IDLE;
                     if (!isSpuriousZero) {
+                        if (_preparing) {
+                            _preparing = false;
+                            $("#progressbar").removeClass("progress-bar-striped progress-bar-animated");
+                        }
                         _lastDisplayedProgress = progress;
                         $("#progressbar").attr("aria-valuenow", progress);
                         $("#progressbar").attr("style", `width: ${progress}%`);
@@ -379,14 +387,20 @@ $(function () {
                 const result = data.cmdResult || data.result || "";
                 if (result) { gcodeLog(`↩ ${result}`); }
             } else if (data.commandType == 1044) {
-                // Print start notification — extract basename from filePath, reset progress
+                // Print start notification — extract basename from filePath, reset progress.
+                // The printer runs a prepare macro (homing, heating, priming, mesh leveling)
+                // before the actual print begins. ct=1001 is not sent during this phase.
+                // We show "Preparing…" until the first real progress update arrives.
                 const filePath = data.filePath || "";
                 const baseName = filePath.split("/").pop().split("\\").pop();
                 if (baseName) { $("#print-name").text(baseName); }
-                // Reset progress bar so stale values from a previous print don't show
                 _lastDisplayedProgress = 0;
-                $("#progressbar").attr("aria-valuenow", 0).attr("style", "width: 0%");
-                $("#progress").text("0%");
+                _preparing = true;
+                $("#progressbar")
+                    .attr("aria-valuenow", 100)
+                    .attr("style", "width: 100%")
+                    .addClass("progress-bar-striped progress-bar-animated");
+                $("#progress").text("Preparing…");
                 document.title = "ankerctl";
             } else if (data.commandType == 1052) {
                 // Returns Layer Info — layer display only; progress comes from ct=1001
@@ -399,6 +413,8 @@ $(function () {
 
         close: function () {
             _lastDisplayedProgress = 0;
+            _preparing = false;
+            $("#progressbar").removeClass("progress-bar-striped progress-bar-animated");
             $("#print-name").text("");
             $("#time-elapsed").text("00:00:00");
             $("#time-remain").text("00:00:00");
@@ -920,6 +936,7 @@ $(function () {
 
     let _currentPrintState = PRINT_STATE.IDLE;
     let _lastDisplayedProgress = 0;
+    let _preparing = false; // true between ct=1044 and first real ct=1001 progress
 
     function _updatePrintControlButtons(state) {
         _currentPrintState = state;
