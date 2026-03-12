@@ -2,21 +2,24 @@ package handler
 
 import "net/http"
 
-// BedLevelingLive queries bed-leveling data from printer.
+// BedLevelingLive reads the bed-leveling grid from the printer by sending
+// "M420 V" GCode and collecting the response for ~4 s. Returns the parsed
+// grid with min/max statistics. Mirrors Python _read_bed_leveling_grid().
 func (h *Handler) BedLevelingLive(w http.ResponseWriter, r *http.Request) {
 	q, ok := h.mqttQueue()
 	if !ok {
 		h.writeError(w, http.StatusServiceUnavailable, "mqtt service not available")
 		return
 	}
-	if err := q.QueryBedLeveling(r.Context()); err != nil {
-		h.writeError(w, http.StatusInternalServerError, "failed to query bed leveling: "+err.Error())
+	grid, err := q.QueryBedLeveling(r.Context())
+	if err != nil {
+		h.writeError(w, http.StatusGatewayTimeout, "failed to read bed leveling grid: "+err.Error())
 		return
 	}
-	h.writeJSON(w, http.StatusOK, map[string]string{"status": "query sent"})
+	h.writeJSON(w, http.StatusOK, grid)
 }
 
-// BedLevelingLast returns most recent persisted bed-leveling grid.
+// BedLevelingLast returns the most recent persisted bed-leveling grid.
 func (h *Handler) BedLevelingLast(w http.ResponseWriter, _ *http.Request) {
 	q, ok := h.mqttQueue()
 	if !ok {

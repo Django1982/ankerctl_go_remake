@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -633,22 +635,118 @@ func (q *MqttQueue) LastBedLevelingGrid() map[string]any {
 	return cloneMap(q.bedLevelingGrid)
 }
 
-// QueryBedLeveling triggers a status query to refresh bed leveling data.
-func (q *MqttQueue) QueryBedLeveling(ctx context.Context) error {
+// blGridRe matches lines like " BL-Grid-0 -0.767 -0.642 ..."
+var blGridRe = regexp.MustCompile(`BL-Grid-\d+\s+([-\d.\s]+)`)
+
+// QueryBedLeveling reads the bilinear bed-leveling grid from the printer by
+// sending GCode "M420 V" and collecting ct=1043 (resData) responses for 4 s.
+// Mirrors Python's _read_bed_leveling_grid / mqtt_gcode_dump("M420 V", ...).
+// On success the parsed grid is persisted to bedLevelingGrid and returned.
+func (q *MqttQueue) QueryBedLeveling(ctx context.Context) (map[string]any, error) {
+	// Subscribe before sending so we don't miss early responses.
+	var (
+		mu  sync.Mutex
+		buf strings.Builder
+	)
+	unsub := q.Tap(func(v any) {
+		msg, ok := v.(map[string]any)
+		if !ok {
+			return
+		}
+		ct, _ := asInt(msg["commandType"])
+		if ct != int(protocol.MqttCmdGcodeCommand) { // ct=1043
+			return
+		}
+		// Printer may use "resData" or "cmdResult" depending on firmware revision.
+		resData, _ := msg["resData"].(string)
+		if resData == "" {
+			resData, _ = msg["cmdResult"].(string)
+		}
+		if resData != "" {
+			mu.Lock()
+			buf.WriteString(resData)
+			buf.WriteString("\n")
+			mu.Unlock()
+		}
+	})
+	defer unsub()
+
+	if err := q.SendGCode(ctx, "M420 V"); err != nil {
+		return nil, fmt.Errorf("mqttqueue: send M420 V: %w", err)
+	}
+
+	// Collect for 4 seconds (same window as Python collect_window=4.0).
+	collectCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	<-collectCtx.Done()
+	if ctx.Err() != nil {
+		return nil, ctx.Err() // caller cancelled
+	}
+
+	mu.Lock()
+	text := buf.String()
+	mu.Unlock()
+
+	grid := parseBLGrid(text)
+	if len(grid) == 0 {
+		return nil, errors.New("mqttqueue: no BL-Grid data in printer response")
+	}
+
+	allVals := make([]float64, 0, len(grid)*len(grid[0]))
+	for _, row := range grid {
+		allVals = append(allVals, row...)
+	}
+	minVal, maxVal := allVals[0], allVals[0]
+	for _, v := range allVals[1:] {
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	maxCols := 0
+	for _, row := range grid {
+		if len(row) > maxCols {
+			maxCols = len(row)
+		}
+	}
+	result := map[string]any{
+		"grid": grid,
+		"min":  minVal,
+		"max":  maxVal,
+		"rows": len(grid),
+		"cols": maxCols,
+	}
+
 	q.mu.Lock()
-	c := q.client
+	q.bedLevelingGrid = result
 	q.mu.Unlock()
-	if c == nil {
-		return errors.New("mqttqueue: mqtt client not connected")
+
+	return result, nil
+}
+
+// parseBLGrid extracts a 2-D float slice from lines matching "BL-Grid-N x y z …".
+func parseBLGrid(text string) [][]float64 {
+	var grid [][]float64
+	for _, line := range strings.Split(text, "\n") {
+		m := blGridRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		fields := strings.Fields(m[1])
+		row := make([]float64, 0, len(fields))
+		for _, f := range fields {
+			v, err := strconv.ParseFloat(f, 64)
+			if err == nil {
+				row = append(row, v)
+			}
+		}
+		if len(row) > 0 {
+			grid = append(grid, row)
+		}
 	}
-	cmd := map[string]any{
-		"commandType": int(protocol.MqttCmdAutoLeveling),
-		"value":       0, // value=0 is usually a query in Anker protocol
-	}
-	if err := c.Query(ctx, cmd); err != nil {
-		return fmt.Errorf("mqttqueue: query bed leveling: %w", err)
-	}
-	return nil
+	return grid
 }
 
 // SimulateEvent emits a synthetic event to subscribers and forwarding sinks.
