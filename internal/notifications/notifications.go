@@ -174,6 +174,11 @@ func (s *NotificationService) maybeProgressNotification(ctx context.Context, pro
 	nextThreshold := lastNotified + interval
 	if lastNotified < 0 {
 		nextThreshold = interval
+		// Ignore stale high-progress values that arrive right at print start
+		// (printer re-sends last progress from previous print on ct=1001).
+		if progress >= 100 {
+			return
+		}
 	}
 	if progress < nextThreshold {
 		return
