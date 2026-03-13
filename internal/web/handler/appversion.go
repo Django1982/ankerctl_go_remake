@@ -52,7 +52,7 @@ func (rc *releaseCache) fetchFromGitHub() string {
 		slog.Debug("version check: GitHub unreachable", "err", err)
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		slog.Debug("version check: unexpected status", "status", resp.StatusCode)
