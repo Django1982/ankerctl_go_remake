@@ -52,3 +52,22 @@ func TestRateLimit_StaticAndHealthAreExcluded(t *testing.T) {
 	}
 }
 
+func TestRateLimit_WebsocketPathsAreExcluded(t *testing.T) {
+	h := RateLimit(1, time.Minute)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// WebSocket paths must never be rate-limited: rapid reconnects during
+	// PPPP restart cycles would otherwise cause 429s and keep badges yellow.
+	paths := []string{"/ws/mqtt", "/ws/ctrl", "/ws/pppp-state", "/ws/upload", "/ws/mqtt", "/ws/ctrl"}
+	for _, path := range paths {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.RemoteAddr = "127.0.0.1:12345"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("path %s status = %d, want %d (WebSocket paths must bypass rate limit)", path, w.Code, http.StatusOK)
+		}
+	}
+}
+

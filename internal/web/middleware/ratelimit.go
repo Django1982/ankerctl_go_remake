@@ -81,7 +81,7 @@ func RateLimit(requestsPerWindow int, window time.Duration) func(http.Handler) h
 }
 
 func shouldSkipRateLimit(path string) bool {
-	return strings.HasPrefix(path, "/static/") || path == "/api/health"
+	return strings.HasPrefix(path, "/static/") || path == "/api/health" || isWebsocketPath(path)
 }
 
 func (rl *rateLimiter) cleanupLocked(now time.Time) {
