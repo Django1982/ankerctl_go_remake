@@ -21,8 +21,10 @@ func (s *Server) registerRoutes() {
 	}
 	h.WithVersion(s.appVersion)
 
-	// Static files
-	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))
+	// Static files — vendor assets get long-lived caching; our own JS/CSS
+	// must not be cached because they change with every rebuild (embed.FS
+	// always reports ModTime=0, so the browser may serve stale content).
+	r.Handle("/static/*", noCacheAppAssets(http.FileServer(http.FS(staticFS))))
 	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/static/img/logo.svg", http.StatusMovedPermanently)
 	})
