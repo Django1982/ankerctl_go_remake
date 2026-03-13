@@ -10,6 +10,7 @@ import (
 	"github.com/django1982/ankerctl/internal/logging"
 	"github.com/django1982/ankerctl/internal/model"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
+	"github.com/django1982/ankerctl/internal/util"
 )
 
 // checkAndRepairConfig validates the active printer's configuration fields at
@@ -60,8 +61,13 @@ func checkAndRepairConfig(cfgMgr *config.Manager, printerIndex int, database *db
 		slog.Warn("startup config check: p2p_key missing")
 	}
 
-	// Printer IP: if absent, run background LAN discovery to find and persist it.
-	if p.IPAddr == "" {
+	// Printer IP: if absent or invalid (broadcast/loopback/unspecified), run
+	// background LAN discovery to find and persist it.
+	if !util.IsValidPrinterIPString(p.IPAddr) {
+		if p.IPAddr != "" {
+			slog.Warn("startup config check: stored printer IP is invalid, treating as missing",
+				"ip", p.IPAddr)
+		}
 		if p.P2PDUID == "" {
 			slog.Warn("startup config check: cannot discover printer IP — p2p_duid missing")
 			return
@@ -74,6 +80,10 @@ func checkAndRepairConfig(cfgMgr *config.Manager, printerIndex int, database *db
 			ip, err := ppppclient.DiscoverLANIP(ctx, duid)
 			if err != nil {
 				slog.Warn("startup config check: LAN discovery failed", "duid", logging.RedactID(duid, 4), "err", err)
+				return
+			}
+			if !util.IsValidPrinterIP(ip) {
+				slog.Warn("startup config check: LAN discovery returned invalid IP, ignoring", "ip", ip)
 				return
 			}
 			ipStr := ip.String()

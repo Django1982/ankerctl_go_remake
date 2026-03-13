@@ -19,6 +19,7 @@ import (
 	"github.com/django1982/ankerctl/internal/model"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	"github.com/django1982/ankerctl/internal/pppp/protocol"
+	"github.com/django1982/ankerctl/internal/util"
 	"github.com/google/uuid"
 )
 
@@ -514,8 +515,8 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 			}
 			return ErrServiceRestartSignal
 		case <-ticker.C:
-			if cli.State() == ppppclient.StateDisconnected {
-				// Give the printer time to reply to LanSearch before restarting.
+			if cli.State() != ppppclient.StateConnected {
+				// Not yet connected — wait for PunchPkt handshake to complete.
 				// Python waits up to 10 s for StateConnected; we do the same.
 				if time.Now().After(connectDeadline) {
 					s.log.Warn("ppppservice: connection timeout, restarting")
@@ -526,10 +527,13 @@ func (s *PPPPService) WorkerRun(ctx context.Context) error {
 			// Once connected, reset deadline (not used further, but clean).
 			connectDeadline = time.Time{}
 			// Persist discovered printer IP on first successful connection.
+			// Guard: only persist valid unicast IPs — never broadcast/loopback/unspecified.
 			if !ipPersisted {
-				if ip := cli.RemoteIP(); ip != nil {
+				if ip := cli.RemoteIP(); util.IsValidPrinterIP(ip) {
 					s.persistPrinterIP(ip.String())
 					ipPersisted = true
+				} else if ip != nil {
+					s.log.Warn("ppppservice: RemoteIP is not a valid unicast address, skipping persist", "ip", ip)
 				}
 			}
 			if err := s.drainAllXzyh(cli); err != nil {
@@ -559,6 +563,11 @@ func (s *PPPPService) WorkerStop() {
 // when the service was created before the user logged in.
 func (s *PPPPService) persistPrinterIP(ipStr string) {
 	if s.cfgMgr == nil {
+		return
+	}
+	// Defense-in-depth: never persist an invalid IP (broadcast, loopback, etc.).
+	if !util.IsValidPrinterIPString(ipStr) {
+		s.log.Warn("ppppservice: refusing to persist invalid printer IP", "ip", ipStr)
 		return
 	}
 	var printerSN string

@@ -16,6 +16,7 @@ import (
 	"github.com/django1982/ankerctl/internal/model"
 	ppppclient "github.com/django1982/ankerctl/internal/pppp/client"
 	ppppcrypto "github.com/django1982/ankerctl/internal/pppp/crypto"
+	"github.com/django1982/ankerctl/internal/util"
 )
 
 // ConfigUpload imports config JSON from multipart upload.
@@ -188,13 +189,13 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 		if existing, loadErr := h.cfg.Load(); loadErr == nil && existing != nil {
 			existingIPs := make(map[string]string)
 			for _, p := range existing.Printers {
-				if p.SN != "" && p.IPAddr != "" {
+				if p.SN != "" && util.IsValidPrinterIPString(p.IPAddr) {
 					existingIPs[p.SN] = p.IPAddr
 				}
 			}
 			for i := range cfg.Printers {
 				if cfg.Printers[i].IPAddr == "" {
-					if ip, ok := existingIPs[cfg.Printers[i].SN]; ok {
+					if ip, ok := existingIPs[cfg.Printers[i].SN]; ok && util.IsValidPrinterIPString(ip) {
 						cfg.Printers[i].IPAddr = ip
 					}
 				}
@@ -205,17 +206,17 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 	if h.db != nil {
 		for i := range cfg.Printers {
 			if cfg.Printers[i].IPAddr == "" && cfg.Printers[i].SN != "" {
-				if cachedIP, dbErr := h.db.GetPrinterIP(cfg.Printers[i].SN); dbErr == nil && cachedIP != "" {
+				if cachedIP, dbErr := h.db.GetPrinterIP(cfg.Printers[i].SN); dbErr == nil && util.IsValidPrinterIPString(cachedIP) {
 					cfg.Printers[i].IPAddr = cachedIP
 					slog.Info("restored printer IP from cache", "sn", cfg.Printers[i].SN, "ip", cachedIP)
 				}
 			}
 		}
 	}
-	// Write all known IPs into the cache for future logins.
+	// Write all known valid IPs into the cache for future logins.
 	if h.db != nil {
 		for _, p := range cfg.Printers {
-			if p.SN != "" && p.IPAddr != "" {
+			if p.SN != "" && util.IsValidPrinterIPString(p.IPAddr) {
 				_ = h.db.SetPrinterIP(p.SN, p.IPAddr)
 			}
 		}
@@ -500,6 +501,10 @@ func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
 			ip, err := ppppclient.DiscoverLANIP(ctx, p.P2PDUID)
 			if err != nil {
 				slog.Warn("background IP discovery failed", "duid", logging.RedactID(p.P2PDUID, 4), "error", err)
+				return
+			}
+			if !util.IsValidPrinterIP(ip) {
+				slog.Warn("background IP discovery returned invalid address, ignoring", "duid", logging.RedactID(p.P2PDUID, 4), "ip", ip)
 				return
 			}
 			ipStr := ip.String()
