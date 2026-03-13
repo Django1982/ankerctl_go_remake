@@ -130,6 +130,46 @@ func (s *TimelapseService) Configure(cfg model.TimelapseConfig, printerSN string
 	}
 }
 
+// Notify intercepts print_state events from MqttQueue and routes them to
+// the timelapse capture lifecycle, then broadcasts to any WS subscribers.
+func (s *TimelapseService) Notify(data any) {
+	s.BaseWorker.Notify(data)
+
+	payload, ok := data.(map[string]any)
+	if !ok || payload["event"] != "print_state" {
+		return
+	}
+	state, ok := asIntIface(payload["state"])
+	if !ok {
+		return
+	}
+	switch state {
+	case 1: // printing
+		filename, _ := payload["filename"].(string)
+		s.StartCapture(filename)
+	case 2: // paused
+		s.FinishCapture(false)
+	case 0: // idle
+		s.FinishCapture(true)
+	case 8: // aborted
+		s.FailCapture()
+	}
+}
+
+func asIntIface(v any) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case float64:
+		return int(x), true
+	case float32:
+		return int(x), true
+	case int64:
+		return int(x), true
+	}
+	return 0, false
+}
+
 // StartCapture begins periodic snapshot capture for a print.
 func (s *TimelapseService) StartCapture(filename string) {
 	select {

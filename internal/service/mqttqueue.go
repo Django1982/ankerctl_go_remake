@@ -435,9 +435,13 @@ func (q *MqttQueue) handleCT1000(payload map[string]any) {
 	q.mu.Unlock()
 
 	if changed {
+		q.mu.Lock()
+		lastFilename := q.lastFilename
+		q.mu.Unlock()
 		stateEvt := map[string]any{
-			"event": "print_state",
-			"state": state,
+			"event":    "print_state",
+			"state":    state,
+			"filename": lastFilename,
 		}
 		q.Notify(stateEvt)
 		q.forward(stateEvt)

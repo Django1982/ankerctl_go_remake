@@ -160,6 +160,11 @@ func runWebserver() error {
 	ft := service.NewFileTransferService(pppp, mqtt)
 	sm.Register(ft)
 
+	// Auto-start always-on services (no WS consumer — must be started explicitly).
+	if _, err := sm.Borrow("notifications"); err != nil {
+		slog.Warn("failed to start notification service", "err", err)
+	}
+
 	// 5. Startup config validation + auto-repair (background, non-blocking).
 	checkAndRepairConfig(cfgMgr, printerIdx, database)
 
