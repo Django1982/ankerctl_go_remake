@@ -120,6 +120,13 @@ func (w *BaseWorker) State() RunState {
 	return w.state
 }
 
+// Wanted reports whether the service is currently desired to be running.
+func (w *BaseWorker) Wanted() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.wanted
+}
+
 // Start requests the worker to start and remain running until Stop is called.
 func (w *BaseWorker) Start(ctx context.Context) {
 	w.mu.Lock()

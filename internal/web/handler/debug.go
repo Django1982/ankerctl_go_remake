@@ -206,12 +206,21 @@ func (h *Handler) DebugServices(w http.ResponseWriter, _ *http.Request) {
 	svcs := h.svc.ServicesSnapshot()
 	refs := h.svc.RefsSnapshot()
 	result := make(map[string]any, len(svcs))
+
+	type wantedGetter interface {
+		Wanted() bool
+	}
+
 	for name, svc := range svcs {
-		result[name] = map[string]any{
+		entry := map[string]any{
 			"state": runStateName(svc.State()),
 			"refs":  refs[name],
 			"type":  "service",
 		}
+		if wg, ok := svc.(wantedGetter); ok {
+			entry["wanted"] = wg.Wanted()
+		}
+		result[name] = entry
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"services": result})
 }

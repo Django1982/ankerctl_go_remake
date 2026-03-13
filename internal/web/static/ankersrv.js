@@ -2451,10 +2451,12 @@ $(function () {
                 return;
             }
             const healthy = !!stats.connected_for_video;
-            const healthClass = healthy ? "text-success" : "text-warning";
+            const enabled = !!stats.enabled;
+            const statusLabel = healthy ? "flowing" : (enabled ? "degraded" : "idle");
+            const healthClass = healthy ? "text-success" : (enabled ? "text-warning" : "text-muted");
             box.innerHTML = `
                 <div class="row g-2 small">
-                    <div class="col-md-4"><span class="text-muted">Status:</span> <span class="${healthClass} fw-semibold">${healthy ? "flowing" : "degraded"}</span></div>
+                    <div class="col-md-4"><span class="text-muted">Status:</span> <span class="${healthClass} fw-semibold">${statusLabel}</span></div>
                     <div class="col-md-4"><span class="text-muted">Enabled:</span> <code>${String(stats.enabled)}</code></div>
                     <div class="col-md-4"><span class="text-muted">Profile:</span> <code>${escapeHtml(String(stats.profile || "-"))}</code></div>
                     <div class="col-md-4"><span class="text-muted">FPS (5s):</span> <code>${Number(stats.fps_5s || 0).toFixed(1)}</code></div>

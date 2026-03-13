@@ -250,8 +250,9 @@ func (q *MqttQueue) maybeQueryStatus(ctx context.Context) error {
 		"value":       0,
 	}
 	if err := c.Query(ctx, cmd); err != nil {
-		q.log.Warn("status query failed", "err", err)
-		return err
+		// Mirror Python: a failed status query is non-fatal. Log and continue;
+		// the service will retry on the next queryInterval tick.
+		q.log.Warn("status query failed (non-fatal, will retry)", "err", err)
 	}
 	return nil
 }
