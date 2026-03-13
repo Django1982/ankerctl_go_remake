@@ -13,7 +13,7 @@ jobs:
     name: Smoke test embedded web UI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - uses: actions/setup-go@v6
         with:
@@ -104,7 +104,7 @@ jobs:
             goarch: amd64
             suffix: windows-amd64.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - uses: actions/setup-go@v6
         with:
@@ -138,7 +138,7 @@ jobs:
             tar -C package -czf "$name.tar.gz" .
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: ankerctl-${{ matrix.suffix }}
           path: |
