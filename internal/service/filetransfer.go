@@ -38,12 +38,12 @@ type FileTransferMqttQueue interface {
 
 // FileTransferEvent describes upload lifecycle notifications.
 type FileTransferEvent struct {
-	Status     string
-	Name       string
-	Size       int64
-	Sent       int64
-	Percentage int
-	Err        string
+	Status     string `json:"status"`
+	Name       string `json:"name,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Sent       int64  `json:"sent,omitempty"`
+	Percentage int    `json:"percentage,omitempty"`
+	Err        string `json:"error,omitempty"`
 }
 
 type uploadRequest struct {
