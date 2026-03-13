@@ -19,6 +19,7 @@ func (s *Server) registerRoutes() {
 	if s.logRing != nil {
 		h.WithLogRing(s.logRing)
 	}
+	h.WithVersion(s.appVersion)
 
 	// Static files
 	r.Handle("/static/*", http.FileServer(http.FS(staticFS)))
@@ -33,6 +34,7 @@ func (s *Server) registerRoutes() {
 	// General API
 	r.Get("/api/health", h.Health)
 	r.Get("/api/version", h.Version)
+	r.Get("/api/ankerctl/version", h.AppVersion)
 	r.Get("/api/snapshot", h.Snapshot)
 
 	// Config

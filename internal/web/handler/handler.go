@@ -77,6 +77,8 @@ type Handler struct {
 	render        RenderFunc
 	stateReloader StateReloader
 	logRing       *logging.RingBuffer
+	version       string
+	releases      *releaseCache
 }
 
 // New creates a handler bundle.

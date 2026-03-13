@@ -70,6 +70,18 @@
         </div>
     </div>
 
+    <!-- Update banner (hidden until JS detects a newer version) -->
+    <div class="container mt-2" id="update-banner" style="display:none">
+        <div class="alert alert-warning alert-dismissible d-flex align-items-center py-2 mb-0" role="alert">
+            <i class="bi bi-arrow-up-circle-fill me-2"></i>
+            <span>Update available: <strong id="update-latest-version"></strong> &mdash;
+                <a id="update-release-link" href="#" target="_blank" rel="noopener noreferrer nofollow"
+                    class="alert-link">View release</a>
+            </span>
+            <button type="button" class="btn-close btn-sm ms-auto" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    </div>
+
     <!-- Message Center -->
     <div class="container text-center" id="messages">
         {{range .Flashes}}

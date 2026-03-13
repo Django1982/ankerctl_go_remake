@@ -67,6 +67,15 @@ type Server struct {
 	portSet    bool
 	apiKeySet  bool
 	devModeSet bool
+
+	appVersion string
+}
+
+// WithAppVersion injects the build-time version string.
+func WithAppVersion(v string) Option {
+	return func(s *Server) {
+		s.appVersion = v
+	}
 }
 
 // Option customizes server construction.

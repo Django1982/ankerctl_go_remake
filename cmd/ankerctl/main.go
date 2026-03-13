@@ -181,6 +181,7 @@ func runWebserver() error {
 	if serverListen != "" {
 		webOpts = append(webOpts, web.WithListen(serverListen))
 	}
+	webOpts = append(webOpts, web.WithAppVersion(Version))
 	srv := web.NewServer(cfgMgr, webOpts...)
 	emitStartupBanner(os.Stderr, startupBanner{
 		ConfigDir:    configDir,

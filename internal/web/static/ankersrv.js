@@ -5,6 +5,43 @@ $(function () {
     $("#copyYear").text(new Date().getFullYear());
 
     /**
+     * Version display + update notification.
+     * Fetches /api/ankerctl/version once per session. Shows version in footer
+     * and a dismissible warning banner if a newer release is available.
+     */
+    (function () {
+        const DISMISS_KEY = "ankerctl_update_dismissed";
+
+        fetch("/api/ankerctl/version")
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+                if (!data) return;
+
+                // Footer version label
+                if (data.current && data.current !== "dev") {
+                    $("#ankerctl-version").text(data.current);
+                }
+
+                // Update banner — only once per dismissed version
+                if (data.update_available && data.latest) {
+                    const dismissed = sessionStorage.getItem(DISMISS_KEY);
+                    if (dismissed === data.latest) return;
+
+                    $("#update-latest-version").text(data.latest);
+                    const releaseURL = "https://github.com/Django1982/ankerctl_go_remake/releases/tag/" + encodeURIComponent(data.latest);
+                    $("#update-release-link").attr("href", releaseURL);
+                    $("#update-banner").show();
+
+                    // Persist dismissal for this version for the session
+                    $("#update-banner .btn-close").one("click", function () {
+                        sessionStorage.setItem(DISMISS_KEY, data.latest);
+                    });
+                }
+            })
+            .catch(function () { /* silently ignore if endpoint unavailable */ });
+    }());
+
+    /**
      * Redirect page when modal dialog is shown
      */
     var popupModal = document.getElementById("popupModal");
