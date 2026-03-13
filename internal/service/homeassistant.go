@@ -133,6 +133,15 @@ func NewHomeAssistantService(
 	return s
 }
 
+// Configure updates the HA broker config at runtime and restarts the service.
+func (s *HomeAssistantService) Configure(cfg model.HomeAssistantConfig) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.enabled = cfg.Enabled
+	s.mu.Unlock()
+	s.Restart()
+}
+
 // UpdateState merges and publishes new Home Assistant entity state.
 func (s *HomeAssistantService) UpdateState(update map[string]any) {
 	copyMap := make(map[string]any, len(update))

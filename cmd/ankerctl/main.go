@@ -130,7 +130,28 @@ func runWebserver() error {
 	timelapse := service.NewTimelapseService(filepath.Join(configDir, "captures"), video)
 	sm.Register(timelapse)
 
-	mqtt := service.NewMqttQueue(cfgMgr, printerIdx, database, nil, timelapse)
+	// Apply saved timelapse config at startup so it is active without requiring a settings save.
+	if startupCfg, err := cfgMgr.Load(); err == nil && startupCfg != nil {
+		printerSN := ""
+		if printerIdx < len(startupCfg.Printers) {
+			printerSN = startupCfg.Printers[printerIdx].SN
+		}
+		timelapse.Configure(startupCfg.Timelapse, printerSN)
+	}
+
+	// Instantiate HA service with saved config so it starts automatically when enabled.
+	var ha *service.HomeAssistantService
+	if startupCfg, err := cfgMgr.Load(); err == nil && startupCfg != nil {
+		printerSN, printerName := "", ""
+		if printerIdx < len(startupCfg.Printers) {
+			printerSN = startupCfg.Printers[printerIdx].SN
+			printerName = startupCfg.Printers[printerIdx].Name
+		}
+		ha = service.NewHomeAssistantService(startupCfg.HomeAssistant, printerSN, printerName, pppp)
+		sm.Register(ha)
+	}
+
+	mqtt := service.NewMqttQueue(cfgMgr, printerIdx, database, ha, timelapse)
 	sm.Register(mqtt)
 
 	notif := notifications.NewNotificationService(cfgMgr, mqtt, video)

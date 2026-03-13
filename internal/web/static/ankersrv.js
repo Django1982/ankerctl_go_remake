@@ -310,9 +310,12 @@ $(function () {
             if (data.commandType == 1000) {
                 // Printer state machine: value=0 idle, value=1 printing, value=2 paused
                 _updatePrintControlButtons(data.value);
-                if (data.value === PRINT_STATE.IDLE && _preparing) {
-                    _preparing = false;
-                    $("#progressbar").removeClass("progress-bar-striped progress-bar-animated");
+                if (data.value === PRINT_STATE.IDLE) {
+                    if (_preparing) {
+                        _preparing = false;
+                        $("#progressbar").removeClass("progress-bar-striped progress-bar-animated");
+                    }
+                    $("#print-layer").text("0 / 0");
                 }
                 if (typeof _onMqttStateChange === "function") {
                     _onMqttStateChange(data.value);

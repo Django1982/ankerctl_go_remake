@@ -430,6 +430,7 @@ func (q *MqttQueue) handleCT1000(payload map[string]any) {
 		q.printActive = false
 		q.pendingHistory = false
 		q.stopRequested = false
+		q.gcodeLayerCount = 0
 	}
 	q.mu.Unlock()
 

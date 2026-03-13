@@ -103,5 +103,10 @@ func (h *Handler) SettingsMQTTUpdate(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to update mqtt settings")
 		return
 	}
+
+	if ha, ok := h.homeAssistant(); ok {
+		ha.Configure(updated)
+	}
+
 	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "home_assistant": updated})
 }

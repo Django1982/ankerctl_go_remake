@@ -199,3 +199,12 @@ func (h *Handler) timelapse() (*service.TimelapseService, bool) {
 	q, ok := svc.(*service.TimelapseService)
 	return q, ok
 }
+
+func (h *Handler) homeAssistant() (*service.HomeAssistantService, bool) {
+	svc, ok := h.serviceByName("homeassistant")
+	if !ok {
+		return nil, false
+	}
+	q, ok := svc.(*service.HomeAssistantService)
+	return q, ok
+}
