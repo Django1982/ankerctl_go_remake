@@ -84,6 +84,7 @@ type Handler struct {
 	stateReloader StateReloader
 	videoChecker  VideoSupportChecker
 	logRing       *logging.RingBuffer
+	logDir        string // resolved once at startup; empty means no disk log dir available
 	version       string
 	releases      *releaseCache
 }
@@ -111,6 +112,25 @@ func (h *Handler) WithVideoChecker(vc VideoSupportChecker) {
 // can serve recent log output as "live.log" without requiring log files.
 func (h *Handler) WithLogRing(ring *logging.RingBuffer) {
 	h.logRing = ring
+}
+
+// WithLogDir sets the disk log directory for the debug log viewer.
+// Resolved once at startup: set to empty string if no directory is available.
+func (h *Handler) WithLogDir(dir string) {
+	h.logDir = dir
+}
+
+// ResolveLogDir determines the log directory once at startup.
+// Honour ANKERCTL_LOG_DIR env var, fall back to "/logs" only if it exists as a
+// directory, otherwise return empty string (no disk log dir available).
+func ResolveLogDir() string {
+	if dir := strings.TrimSpace(os.Getenv("ANKERCTL_LOG_DIR")); dir != "" {
+		return dir
+	}
+	if info, err := os.Stat("/logs"); err == nil && info.IsDir() {
+		return "/logs"
+	}
+	return ""
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload any) {

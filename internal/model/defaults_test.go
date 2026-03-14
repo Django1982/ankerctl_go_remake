@@ -33,8 +33,10 @@ func TestDefaultTimelapseConfig_PureDefaults(t *testing.T) {
 	if !cfg.SavePersistent {
 		t.Error("SavePersistent = false, want true")
 	}
-	if cfg.OutputDir != "/captures" {
-		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, "/captures")
+	// Default should be user config dir based, not hardcoded /captures.
+	expected := defaultCapturesDir()
+	if cfg.OutputDir != expected {
+		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, expected)
 	}
 	if cfg.Light != nil {
 		t.Errorf("Light = %v, want nil", cfg.Light)

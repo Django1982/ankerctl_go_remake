@@ -20,6 +20,7 @@ func (s *Server) registerRoutes() {
 	if s.logRing != nil {
 		h.WithLogRing(s.logRing)
 	}
+	h.WithLogDir(handler.ResolveLogDir())
 	h.WithVersion(s.appVersion)
 
 	// Static files — vendor assets get long-lived caching; our own JS/CSS
