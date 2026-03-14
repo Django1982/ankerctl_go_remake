@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -85,6 +86,11 @@ type MqttQueue struct {
 	bedTemp          *int
 	bedTempTarget    *int
 
+	// Z-axis recoup tracking (populated from ct=1021 messages).
+	// Value is in 0.01 mm steps (e.g. 13 means 0.13 mm).
+	zAxisRecoup    *int
+	zAxisRecoupCh  chan struct{} // signaled on every ct=1021 update
+
 	homeAssistant eventSink
 	timelapse     eventSink
 }
@@ -101,6 +107,7 @@ func NewMqttQueue(cfg *config.Manager, printerIndex int, history *db.DB, ha even
 		homeAssistant:      ha,
 		timelapse:          timelapse,
 		bedLevelingGrid:    make(map[string]any),
+		zAxisRecoupCh:      make(chan struct{}, 1),
 	}
 	q.clientFactory = defaultMQTTClientFactory(cfg, printerIndex)
 	q.BindHooks(q)
@@ -223,6 +230,7 @@ func (q *MqttQueue) WorkerStop() {
 	c := q.client
 	q.client = nil
 	q.resetPrintStateLocked()
+	q.zAxisRecoup = nil
 	q.mu.Unlock()
 	if c != nil {
 		c.Disconnect(250 * time.Millisecond)
@@ -368,6 +376,8 @@ func (q *MqttQueue) handlePayload(obj map[string]any) {
 		q.handleNozzleTemp(normalized)
 	case int(protocol.MqttCmdHotbedTemp): // ct=1004
 		q.handleBedTemp(normalized)
+	case int(protocol.MqttCmdZAxisRecoup): // ct=1021
+		q.handleZAxisRecoup(normalized)
 	}
 
 	if isForwardRelevant(ct, normalized) {
@@ -489,6 +499,122 @@ func (q *MqttQueue) handleBedTemp(payload map[string]any) {
 	} else if target, ok := asInt(payload["target"]); ok {
 		v := normalizeTemp(target)
 		q.bedTempTarget = &v
+	}
+}
+
+func (q *MqttQueue) handleZAxisRecoup(payload map[string]any) {
+	v, ok := asInt(payload["value"])
+	if !ok {
+		return
+	}
+	q.mu.Lock()
+	q.zAxisRecoup = &v
+	q.mu.Unlock()
+	// Signal any goroutine waiting for a readback confirmation.
+	select {
+	case q.zAxisRecoupCh <- struct{}{}:
+	default:
+	}
+}
+
+// ZAxisRecoup returns the most recent z-axis recoup value in 0.01 mm steps,
+// or nil if no ct=1021 message has been received yet.
+func (q *MqttQueue) ZAxisRecoup() *int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.zAxisRecoup == nil {
+		return nil
+	}
+	v := *q.zAxisRecoup
+	return &v
+}
+
+// ZOffsetMM returns the current Z-offset in millimeters (0.01 mm resolution),
+// or 0.0 and false if no ct=1021 data is available.
+func (q *MqttQueue) ZOffsetMM() (float64, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.zAxisRecoup == nil {
+		return 0, false
+	}
+	return float64(*q.zAxisRecoup) * 0.01, true
+}
+
+// SetZOffset sets the Z-offset to the given absolute value in millimeters.
+// It reads the current ct=1021 value, computes the delta, sends M290 Z<delta>,
+// and waits up to timeout for the printer to confirm the new value via ct=1021.
+func (q *MqttQueue) SetZOffset(ctx context.Context, targetMM float64) error {
+	q.mu.Lock()
+	currentSteps := q.zAxisRecoup
+	c := q.client
+	q.mu.Unlock()
+
+	if c == nil {
+		return errors.New("mqttqueue: mqtt client not connected")
+	}
+	if currentSteps == nil {
+		return errors.New("mqttqueue: z-offset unknown (no ct=1021 received yet)")
+	}
+
+	targetSteps := int(math.Round(targetMM / 0.01))
+	deltaSteps := targetSteps - *currentSteps
+	if deltaSteps == 0 {
+		return nil // already at target
+	}
+	deltaMM := float64(deltaSteps) * 0.01
+
+	return q.sendZOffsetDelta(ctx, deltaMM, targetSteps)
+}
+
+// NudgeZOffset adjusts the Z-offset by deltaMM (positive = up, negative = down).
+// It sends M290 Z<delta> and waits for ct=1021 confirmation.
+func (q *MqttQueue) NudgeZOffset(ctx context.Context, deltaMM float64) error {
+	q.mu.Lock()
+	currentSteps := q.zAxisRecoup
+	c := q.client
+	q.mu.Unlock()
+
+	if c == nil {
+		return errors.New("mqttqueue: mqtt client not connected")
+	}
+	if currentSteps == nil {
+		return errors.New("mqttqueue: z-offset unknown (no ct=1021 received yet)")
+	}
+
+	deltaSteps := int(math.Round(deltaMM / 0.01))
+	if deltaSteps == 0 {
+		return nil
+	}
+
+	targetSteps := *currentSteps + deltaSteps
+	return q.sendZOffsetDelta(ctx, deltaMM, targetSteps)
+}
+
+func (q *MqttQueue) sendZOffsetDelta(ctx context.Context, deltaMM float64, targetSteps int) error {
+	// Format delta with sign: "+0.05" or "-0.10"
+	gcode := fmt.Sprintf("M290 Z%+.2f", deltaMM)
+
+	if err := q.SendGCode(ctx, gcode); err != nil {
+		return fmt.Errorf("mqttqueue: send z-offset gcode: %w", err)
+	}
+
+	// Wait for ct=1021 readback confirming the target value.
+	deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-deadline.Done():
+			return fmt.Errorf("mqttqueue: z-offset readback timeout (expected steps=%d)", targetSteps)
+		case <-q.zAxisRecoupCh:
+			q.mu.Lock()
+			current := q.zAxisRecoup
+			q.mu.Unlock()
+			if current != nil && *current == targetSteps {
+				return nil
+			}
+			// Not yet at target, keep waiting.
+		}
 	}
 }
 
@@ -788,6 +914,10 @@ func (q *MqttQueue) SnapshotState() map[string]any {
 		"bed_target":    q.bedTempTarget,
 	}
 	out["temperature"] = tempMap
+	if q.zAxisRecoup != nil {
+		out["z_axis_recoup"] = *q.zAxisRecoup
+		out["z_offset_mm"] = float64(*q.zAxisRecoup) * 0.01
+	}
 	return out
 }
 
