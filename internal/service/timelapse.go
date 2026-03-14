@@ -83,7 +83,12 @@ type TimelapseService struct {
 // NewTimelapseService creates a timelapse service.
 func NewTimelapseService(capturesDir string, snapshotter TimelapseSnapshotter) *TimelapseService {
 	if capturesDir == "" {
-		capturesDir = "/captures"
+		// Fall back to user config directory instead of hardcoded /captures.
+		if cfgDir, err := os.UserConfigDir(); err == nil {
+			capturesDir = filepath.Join(cfgDir, "ankerctl", "captures")
+		} else {
+			capturesDir = filepath.Join(os.Getenv("HOME"), ".config", "ankerctl", "captures")
+		}
 	}
 	s := &TimelapseService{
 		BaseWorker:  NewBaseWorker("timelapse"),

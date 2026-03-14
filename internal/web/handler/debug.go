@@ -87,7 +87,7 @@ const liveLogFilename = "live.log"
 
 // DebugLogsList lists log files. It always includes a virtual "live.log" entry
 // backed by the in-memory ring buffer, plus any real .log files found in
-// ANKERCTL_LOG_DIR (defaults to /logs).
+// the resolved log directory (ANKERCTL_LOG_DIR or /logs if it exists).
 func (h *Handler) DebugLogsList(w http.ResponseWriter, _ *http.Request) {
 	if !h.devMode {
 		h.writeError(w, http.StatusNotFound, "not found")
@@ -97,22 +97,24 @@ func (h *Handler) DebugLogsList(w http.ResponseWriter, _ *http.Request) {
 	// Always expose the live ring buffer as the first entry.
 	files := []string{liveLogFilename}
 
-	logDir := strings.TrimSpace(os.Getenv("ANKERCTL_LOG_DIR"))
-	if logDir == "" {
-		logDir = "/logs"
-	}
-	if entries, err := os.ReadDir(logDir); err == nil {
-		var diskFiles []string
-		for _, e := range entries {
-			if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
-				diskFiles = append(diskFiles, e.Name())
+	if h.logDir != "" {
+		if entries, err := os.ReadDir(h.logDir); err == nil {
+			var diskFiles []string
+			for _, e := range entries {
+				if e.Type().IsRegular() && strings.HasSuffix(strings.ToLower(e.Name()), ".log") {
+					diskFiles = append(diskFiles, e.Name())
+				}
 			}
+			sort.Strings(diskFiles)
+			files = append(files, diskFiles...)
 		}
-		sort.Strings(diskFiles)
-		files = append(files, diskFiles...)
 	}
 
-	h.writeJSON(w, http.StatusOK, map[string]any{"files": files})
+	resp := map[string]any{"files": files}
+	if h.logDir == "" {
+		resp["warning"] = "No log directory configured (set ANKERCTL_LOG_DIR)"
+	}
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // DebugLogsContent returns the tail of a log file. The special filename
@@ -146,12 +148,12 @@ func (h *Handler) DebugLogsContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logDir := strings.TrimSpace(os.Getenv("ANKERCTL_LOG_DIR"))
-	if logDir == "" {
-		logDir = "/logs"
+	if h.logDir == "" {
+		h.writeError(w, http.StatusNotFound, "No log directory configured (set ANKERCTL_LOG_DIR)")
+		return
 	}
-	path := filepath.Join(logDir, filename)
-	realLogDir, _ := filepath.Abs(logDir)
+	path := filepath.Join(h.logDir, filename)
+	realLogDir, _ := filepath.Abs(h.logDir)
 	realPath, err := filepath.Abs(path)
 	if err != nil || !strings.HasPrefix(realPath, realLogDir+string(os.PathSeparator)) {
 		h.writeError(w, http.StatusBadRequest, "Invalid filename")

@@ -2,6 +2,7 @@ package model
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -153,7 +154,7 @@ func DefaultTimelapseConfig() TimelapseConfig {
 		Interval:       envInt("TIMELAPSE_INTERVAL_SEC", 30),
 		MaxVideos:      envInt("TIMELAPSE_MAX_VIDEOS", 10),
 		SavePersistent: envBool("TIMELAPSE_SAVE_PERSISTENT", true),
-		OutputDir:      envString("TIMELAPSE_CAPTURES_DIR", "/captures"),
+		OutputDir:      envString("TIMELAPSE_CAPTURES_DIR", defaultCapturesDir()),
 		Light:          lightPtr,
 	}
 }
@@ -170,6 +171,16 @@ func DefaultHomeAssistantConfig() HomeAssistantConfig {
 		DiscoveryPrefix: envString("HA_MQTT_DISCOVERY_PREFIX", "homeassistant"),
 		NodeID:          "ankermake_m5",
 	}
+}
+
+// defaultCapturesDir returns the default timelapse captures directory.
+// Uses the user config directory (~/.config/ankerctl/captures) instead of
+// the hardcoded /captures, matching Python's platformdirs-based default.
+func defaultCapturesDir() string {
+	if cfgDir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(cfgDir, "ankerctl", "captures")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "ankerctl", "captures")
 }
 
 // envBool reads an environment variable as a boolean.
