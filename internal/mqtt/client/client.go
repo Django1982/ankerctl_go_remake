@@ -168,7 +168,17 @@ func (c *Client) Fetch() []DecodedMessage {
 func (c *Client) subscribeAll(ctx context.Context) error {
 	handler := func(topic string, payload []byte) {
 		if err := c.handleIncoming(topic, payload); err != nil {
-			c.log.Error("mqtt decode failed", "topic", topic, "error", err)
+			// Log first 16 bytes as hex to aid diagnosis (mirrors Python's hex dump on failure).
+			preview := payload
+			if len(preview) > 16 {
+				preview = preview[:16]
+			}
+			c.log.Error("mqtt decode failed",
+				"topic", topic,
+				"error", err,
+				"payload_len", len(payload),
+				"payload_prefix", fmt.Sprintf("%x", preview),
+			)
 		}
 	}
 
