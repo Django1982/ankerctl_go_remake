@@ -17,13 +17,28 @@ import (
 	"github.com/django1982/ankerctl/internal/service"
 )
 
+// PrinterSummary is a view-model entry used in the printer selector dropdown.
+// It carries the per-printer Supported flag so templates can render disabled
+// items for unsupported devices without needing to call model.IsPrinterSupported
+// from inside the template.
+type PrinterSummary struct {
+	Index   int
+	Name    string
+	SN      string
+	Model   string
+	IPAddr  string
+	Supported bool
+}
+
 // TemplateData holds the common variables for rendering the web UI.
 type TemplateData struct {
 	Printers            []model.Printer
+	PrinterList         []PrinterSummary // enriched list for the selector dropdown
 	ActivePrinterIndex  int
 	Printer             *model.Printer
 	PrinterIndexLocked  bool
 	VideoSupported      bool
+	UnsupportedDevice   bool // true when active printer is a non-3D-printer device
 	Configure           bool
 	DebugMode           bool
 	Flashes             []Flash
@@ -73,20 +88,27 @@ type VideoSupportChecker interface {
 	VideoSupported() bool
 }
 
+// UnsupportedDeviceChecker reports whether the active printer is an unsupported
+// device (e.g. the eufyMake E1 UV Printer, model V8260).
+type UnsupportedDeviceChecker interface {
+	IsUnsupportedDevice() bool
+}
+
 // Handler bundles shared dependencies used by HTTP handlers.
 type Handler struct {
-	cfg           *config.Manager
-	db            *db.DB
-	svc           *service.ServiceManager
-	log           *slog.Logger
-	devMode       bool
-	render        RenderFunc
-	stateReloader StateReloader
-	videoChecker  VideoSupportChecker
-	logRing       *logging.RingBuffer
-	logDir        string // resolved once at startup; empty means no disk log dir available
-	version       string
-	releases      *releaseCache
+	cfg               *config.Manager
+	db                *db.DB
+	svc               *service.ServiceManager
+	log               *slog.Logger
+	devMode           bool
+	render            RenderFunc
+	stateReloader     StateReloader
+	videoChecker      VideoSupportChecker
+	unsupportedChecker UnsupportedDeviceChecker
+	logRing           *logging.RingBuffer
+	logDir            string // resolved once at startup; empty means no disk log dir available
+	version           string
+	releases          *releaseCache
 }
 
 // New creates a handler bundle.
@@ -106,6 +128,12 @@ func (h *Handler) WithStateReloader(r StateReloader) {
 // active printer has camera/video support, so templates can hide video UI.
 func (h *Handler) WithVideoChecker(vc VideoSupportChecker) {
 	h.videoChecker = vc
+}
+
+// WithUnsupportedChecker sets the checker used to determine whether the active
+// printer is an unsupported device. Used by templates and the selector handler.
+func (h *Handler) WithUnsupportedChecker(uc UnsupportedDeviceChecker) {
+	h.unsupportedChecker = uc
 }
 
 // WithLogRing attaches an in-memory log ring buffer so the debug log viewer
@@ -251,4 +279,14 @@ func (h *Handler) videoSupported() bool {
 		return h.videoChecker.VideoSupported()
 	}
 	return true
+}
+
+// isUnsupportedDevice returns whether the active printer is an unsupported
+// device (e.g. eufyMake E1 UV Printer). Falls back to false when no checker
+// is configured — fail-open is the correct default here (assume supported).
+func (h *Handler) isUnsupportedDevice() bool {
+	if h.unsupportedChecker != nil {
+		return h.unsupportedChecker.IsUnsupportedDevice()
+	}
+	return false
 }

@@ -17,6 +17,7 @@ func (s *Server) registerRoutes() {
 	h := handler.New(s.config, s.database, s.services, s.logger, s.devMode, rf)
 	h.WithStateReloader(s)
 	h.WithVideoChecker(s)
+	h.WithUnsupportedChecker(s)
 	if s.logRing != nil {
 		h.WithLogRing(s.logRing)
 	}

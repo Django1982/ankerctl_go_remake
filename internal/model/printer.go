@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -94,6 +95,23 @@ func (p *Printer) UnmarshalJSON(data []byte) error {
 	p.P2PDID = raw.P2PDID
 
 	return nil
+}
+
+// UnsupportedPrinterModels lists device model codes that ankerctl cannot
+// control. These are non-3D-printer devices (e.g. eufyMake E1 UV Printer)
+// that use an incompatible MQTT format. Model comparison is case-insensitive.
+var UnsupportedPrinterModels = []string{"V8260"}
+
+// IsPrinterSupported reports whether the given printer model code is supported
+// by ankerctl. Returns false for UV printers and other non-3D-printer devices.
+func IsPrinterSupported(model string) bool {
+	model = strings.ToUpper(strings.TrimSpace(model))
+	for _, m := range UnsupportedPrinterModels {
+		if strings.ToUpper(m) == model {
+			return false
+		}
+	}
+	return true
 }
 
 // timeFromUnixFloat converts a Unix timestamp (potentially with fractional seconds)

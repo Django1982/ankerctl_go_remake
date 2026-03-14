@@ -20,29 +20,38 @@
                 <img src="/static/img/logo.svg" class="me-2" alt="logo">
                 <span class="text-body-emphasis align-self-baseline fs-4">ankerctl</span>
             </a>
-            {{if and .Printers (eq (len .Printers) 1)}}
+            {{if and .PrinterList (eq (len .PrinterList) 1)}}
+            {{$p0 := index .PrinterList 0}}
             <span class="text-muted small me-3">
-                <i class="bi bi-printer me-1"></i>{{(index .Printers 0).Name}} ({{last5 (index .Printers 0).SN}})
+                <i class="bi bi-printer me-1"></i>{{$p0.Name}} ({{last5 $p0.SN}})
+                {{if not $p0.Supported}}<span class="badge bg-warning text-dark ms-1">Unsupported</span>{{end}}
             </span>
-            {{else if and .Printers (gt (len .Printers) 1)}}
+            {{else if and .PrinterList (gt (len .PrinterList) 1)}}
+            {{$ap := index .PrinterList .ActivePrinterIndex}}
             <div class="dropdown me-3" id="printer-selector">
-                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                <button class="btn btn-sm {{if .UnsupportedDevice}}btn-outline-warning{{else}}btn-outline-secondary{{end}} dropdown-toggle" type="button"
                         data-bs-toggle="dropdown" aria-expanded="false"
                         {{if .PrinterIndexLocked}}disabled title="Locked by PRINTER_INDEX env var"{{end}}>
                     <i class="bi bi-printer me-1"></i>
-                    {{$ap := index .Printers .ActivePrinterIndex}}
                     {{$ap.Name}} ({{last5 $ap.SN}})
+                    {{if .UnsupportedDevice}}<span class="badge bg-warning text-dark ms-1">Unsupported</span>{{end}}
                     {{if .PrinterIndexLocked}}<i class="bi bi-lock-fill ms-1"></i>{{end}}
                 </button>
                 <ul class="dropdown-menu">
-                    {{range $idx, $p := .Printers}}
+                    {{range .PrinterList}}
                     <li>
-                        {{/* Assuming all are supported for now, or add Supported field to model */}}
-                        <a class="dropdown-item{{if eq $idx $.ActivePrinterIndex}} active{{end}}"
-                           href="#" data-printer-index="{{$idx}}">
-                            {{if eq $idx $.ActivePrinterIndex}}<i class="bi bi-check-lg me-1"></i>{{end}}
-                            {{$p.Name}} ({{last5 $p.SN}})
+                        {{if .Supported}}
+                        <a class="dropdown-item{{if eq .Index $.ActivePrinterIndex}} active{{end}}"
+                           href="#" data-printer-index="{{.Index}}">
+                            {{if eq .Index $.ActivePrinterIndex}}<i class="bi bi-check-lg me-1"></i>{{end}}
+                            {{.Name}} ({{last5 .SN}})
                         </a>
+                        {{else}}
+                        <span class="dropdown-item disabled" title="Device {{.Model}} is not supported by ankerctl">
+                            <i class="bi bi-slash-circle me-1 text-warning"></i>
+                            {{.Name}} ({{last5 .SN}}) &mdash; <em class="text-warning small">Unsupported device</em>
+                        </span>
+                        {{end}}
                     </li>
                     {{end}}
                 </ul>
@@ -84,6 +93,19 @@
 
     <!-- Message Center -->
     <div class="container text-center" id="messages">
+        {{if .UnsupportedDevice}}
+        <div class="alert alert-warning d-flex align-items-center" role="alert">
+            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+            <div>
+                <strong>Unsupported device detected.</strong>
+                The active printer uses a format not supported by ankerctl.
+                Printer controls are disabled.
+                {{if gt (len .PrinterList) 1}}
+                Use the printer selector above to switch to a supported printer.
+                {{end}}
+            </div>
+        </div>
+        {{end}}
         {{range .Flashes}}
         <div class="alert alert-{{.Category}} alert-dismissible fade show" data-timeout="7500" role="alert">
             <button type="button" class="btn-close btn-sm btn-close-white" data-bs-dismiss="alert" aria-label="Close">

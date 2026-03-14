@@ -119,8 +119,27 @@ func runWebserver() error {
 	// 3. Service Manager
 	sm := service.NewServiceManager()
 
+	// Determine whether the active printer is a supported device before starting
+	// any services. Unsupported devices (e.g. eufyMake E1 UV Printer, V8260) use
+	// an incompatible MQTT format; starting services for them causes unbounded
+	// "mqtt decode failed" errors with no useful behaviour.
+	activePrinterSupported := true
+	if startupCfg, err := cfgMgr.Load(); err == nil && startupCfg != nil {
+		if printerIdx < len(startupCfg.Printers) {
+			activePrinterModel := startupCfg.Printers[printerIdx].Model
+			if !model.IsPrinterSupported(activePrinterModel) {
+				activePrinterSupported = false
+				slog.Warn("active printer is not supported by ankerctl — all services suppressed",
+					"printer_index", printerIdx,
+					"model", activePrinterModel,
+					"hint", "switch to a supported printer in the web UI")
+			}
+		}
+	}
+
 	// 4. Services
 	// Background services monitor the printer specified by printerIdx.
+	// All services are skipped when the active device is unsupported.
 	pppp := service.NewPPPPServiceWithDB(cfgMgr, printerIdx, database)
 	sm.Register(pppp)
 
@@ -160,12 +179,18 @@ func runWebserver() error {
 	ft := service.NewFileTransferService(pppp, mqtt)
 	sm.Register(ft)
 
-	// Auto-start always-on services (no WS consumer — must be started explicitly).
-	if _, err := sm.Borrow("notifications"); err != nil {
-		slog.Warn("failed to start notification service", "err", err)
-	}
-	if _, err := sm.Borrow("timelapse"); err != nil {
-		slog.Warn("failed to start timelapse service", "err", err)
+	// Auto-start always-on services only for supported printers.
+	// For unsupported devices the service objects are registered (so the web layer
+	// can query them), but never started — they remain dormant.
+	if activePrinterSupported {
+		if _, err := sm.Borrow("notifications"); err != nil {
+			slog.Warn("failed to start notification service", "err", err)
+		}
+		if _, err := sm.Borrow("timelapse"); err != nil {
+			slog.Warn("failed to start timelapse service", "err", err)
+		}
+	} else {
+		slog.Info("services not started: active printer is unsupported")
 	}
 
 	// 5. Startup config validation + auto-repair (background, non-blocking).

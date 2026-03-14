@@ -33,7 +33,14 @@ const (
 	defaultUploadMaxMB = 2048
 )
 
-var defaultUnsupportedPrinters = map[string]struct{}{}
+// defaultUnsupportedPrinters lists device model codes that ankerctl cannot
+// control. These are non-3D-printer devices (e.g. the eufyMake E1 UV printer,
+// model V8260) that use an incompatible MQTT format (m5=6). All services are
+// suppressed and printer-control endpoints return 503 when such a device is
+// active. Extend via the ANKERCTL_UNSUPPORTED_PRINTERS env var (comma-separated).
+var defaultUnsupportedPrinters = map[string]struct{}{
+	"v8260": {}, // eufyMake E1 UV Printer — incompatible MQTT m5=6 format
+}
 
 var defaultPrintersWithoutCamera = map[string]struct{}{
 	"V8110": {}, // AnkerMake M5C — no built-in camera

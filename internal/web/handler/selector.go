@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/django1982/ankerctl/internal/model"
@@ -23,7 +24,7 @@ func (h *Handler) PrintersList(w http.ResponseWriter, _ *http.Request) {
 			"sn":        p.SN,
 			"model":     p.Model,
 			"ip_addr":   p.IPAddr,
-			"supported": true,
+			"supported": model.IsPrinterSupported(p.Model),
 		})
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"printers": printers, "active_index": active, "locked": locked})
@@ -51,6 +52,15 @@ func (h *Handler) PrintersSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.Index < 0 || payload.Index >= len(cfg.Printers) {
 		h.writeError(w, http.StatusBadRequest, "Printer index out of range")
+		return
+	}
+
+	// Refuse to switch to an unsupported device (e.g. eufyMake E1 UV Printer).
+	// Matches Python: POST /api/printers/active returns 403 for unsupported targets.
+	targetModel := cfg.Printers[payload.Index].Model
+	if !model.IsPrinterSupported(targetModel) {
+		h.writeError(w, http.StatusForbidden,
+			fmt.Sprintf("Device %s is not supported by ankerctl", targetModel))
 		return
 	}
 

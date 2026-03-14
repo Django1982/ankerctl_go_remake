@@ -24,6 +24,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		Configure:          cfg != nil && cfg.IsConfigured(),
 		DebugMode:          h.devMode,
 		VideoSupported:     h.videoSupported(),
+		UnsupportedDevice:  h.isUnsupportedDevice(),
 		CountryCodes:       countryCodes,
 		RequestHost:        host,
 		RequestPort:        port,
@@ -33,6 +34,19 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 	if cfg != nil {
 		data.Printers = cfg.Printers
 		data.Printer = printer
+		// Build the enriched printer list for the selector dropdown.
+		pl := make([]PrinterSummary, 0, len(cfg.Printers))
+		for i, p := range cfg.Printers {
+			pl = append(pl, PrinterSummary{
+				Index:     i,
+				Name:      p.Name,
+				SN:        p.SN,
+				Model:     p.Model,
+				IPAddr:    p.IPAddr,
+				Supported: model.IsPrinterSupported(p.Model),
+			})
+		}
+		data.PrinterList = pl
 		data.UploadRateConfig = cfg.UploadRateMbps
 		data.AnkerConfig = configShow(cfg)
 		if cfg.Account != nil {
