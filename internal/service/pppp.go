@@ -410,8 +410,11 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		return fmt.Errorf("aabb begin reply: %w", err)
 	}
 
-	// 4. Send DATA — 128KB blocks matches Python blocksize.
-	blockSize := 1024 * 128
+	// 4. Send DATA — 32KB blocks match the hardened Python blocksize.
+	const (
+		blockSize     = 1024 * 32
+		maxDataRetries = 2
+	)
 	var pos int64
 	for pos < info.Size {
 		end := pos + int64(blockSize)
@@ -428,12 +431,25 @@ func (s *PPPPService) Upload(ctx context.Context, info UploadInfo, payload []byt
 		if err != nil {
 			return err
 		}
-		if _, _, err := ch.WriteContext(ctx, dp, true); err != nil {
-			return fmt.Errorf("write aabb data at %d: %w", pos, err)
-		}
 
-		if err := waitReply(); err != nil {
-			return fmt.Errorf("aabb data reply at %d: %w", pos, err)
+		var lastErr error
+		for attempt := 0; attempt <= maxDataRetries; attempt++ {
+			if _, _, err := ch.WriteContext(ctx, dp, true); err != nil {
+				return fmt.Errorf("write aabb data at %d: %w", pos, err)
+			}
+			lastErr = waitReply()
+			if lastErr == nil {
+				break
+			}
+			// Only retry on DRW-level timeouts, not application errors.
+			if attempt < maxDataRetries && strings.Contains(lastErr.Error(), "timeout") {
+				s.log.Warn("ppppservice: retrying file transfer chunk after transport timeout",
+					"pos", pos, "attempt", attempt+2, "max", maxDataRetries+1)
+				ch.ResetTx()
+			}
+		}
+		if lastErr != nil {
+			return fmt.Errorf("aabb data reply at %d: %w", pos, lastErr)
 		}
 
 		pos = end

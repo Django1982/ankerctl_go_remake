@@ -341,3 +341,16 @@ func (c *Channel) WriteContext(ctx context.Context, payload []byte, block bool) 
 
 	return start, done, nil
 }
+
+// ResetTx clears all pending TX state. Used after a DRW timeout to allow
+// retransmission of data from the application layer. Mirrors Python's
+// reset_tx() method from the PPPP upload hardening.
+func (c *Channel) ResetTx() {
+	c.mu.Lock()
+	c.txQueue = c.txQueue[:0]
+	c.backlog = c.backlog[:0]
+	c.acks = make(map[CyclicU16]struct{})
+	c.txAck = c.txCtr
+	c.mu.Unlock()
+	c.signal()
+}
