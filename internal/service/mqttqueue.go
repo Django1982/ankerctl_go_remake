@@ -96,7 +96,7 @@ type MqttQueue struct {
 }
 
 // NewMqttQueue creates a MqttQueue service.
-func NewMqttQueue(cfg *config.Manager, printerIndex int, history *db.DB, ha eventSink, timelapse eventSink) *MqttQueue {
+func NewMqttQueue(cfg *config.Manager, printerIndex int, history *db.DB, ha *HomeAssistantService, timelapse eventSink) *MqttQueue {
 	q := &MqttQueue{
 		BaseWorker:         NewBaseWorker("mqttqueue"),
 		log:                slog.With("service", "mqttqueue"),
@@ -104,10 +104,16 @@ func NewMqttQueue(cfg *config.Manager, printerIndex int, history *db.DB, ha even
 		queryInterval:      10 * time.Second,
 		pollInterval:       100 * time.Millisecond,
 		currentPrinterStat: -1,
-		homeAssistant:      ha,
 		timelapse:          timelapse,
 		bedLevelingGrid:    make(map[string]any),
 		zAxisRecoupCh:      make(chan struct{}, 1),
+	}
+	// Assign ha only when non-nil to avoid the typed-nil-interface trap:
+	// a (*HomeAssistantService)(nil) stored in an eventSink interface is
+	// not nil, so the nil-guard in forward() would not fire and Notify()
+	// would panic.
+	if ha != nil {
+		q.homeAssistant = ha
 	}
 	q.clientFactory = defaultMQTTClientFactory(cfg, printerIndex)
 	q.BindHooks(q)
