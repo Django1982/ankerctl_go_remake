@@ -441,7 +441,7 @@ func DiscoverLANAll(ctx context.Context) ([]LANDiscoveryResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if err := c.SendPacket(protocol.LanSearch{}, nil); err != nil {
 		return nil, err
