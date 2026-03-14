@@ -75,10 +75,16 @@ func newWebserverCmd() *cobra.Command {
 		Use:   "webserver",
 		Short: "Manage the web interface",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Allow overriding via environment variable
+			// Env/flag override takes precedence; otherwise restore last UI selection.
 			if envIdx := os.Getenv("PRINTER_INDEX"); envIdx != "" {
 				if parsed, err := strconv.Atoi(envIdx); err == nil {
 					printerIdx = parsed
+				}
+			} else if !cmd.Flags().Changed("printer-index") {
+				if cfgMgr, err := config.NewManager(configDir); err == nil {
+					if cfg, err := cfgMgr.Load(); err == nil && cfg != nil {
+						printerIdx = cfg.ActivePrinterIndex
+					}
 				}
 			}
 			return runWebserver()
