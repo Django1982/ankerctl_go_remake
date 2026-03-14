@@ -29,17 +29,26 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ---------------------------------------------------------------------------
 FROM alpine:latest
 
-RUN apk add --no-cache ffmpeg ca-certificates tzdata \
+RUN apk add --no-cache ffmpeg ca-certificates tzdata su-exec \
     && adduser -D -h /home/ankerctl ankerctl
 
 COPY --from=builder /out/ankerctl /usr/local/bin/ankerctl
 
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Config and captures directories
-RUN mkdir -p /root/.ankerctl /captures \
-    && chown -R ankerctl:ankerctl /home/ankerctl
+RUN mkdir -p /root/.ankerctl /captures /logs \
+    && chown -R ankerctl:ankerctl /home/ankerctl /captures /logs
 
 # Static files are embedded via //go:embed -- no COPY needed.
 
 EXPOSE 4470
 
-ENTRYPOINT ["ankerctl", "webserver", "--listen", "0.0.0.0:4470"]
+STOPSIGNAL SIGINT
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:4470/api/health || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["ankerctl", "webserver", "--listen", "0.0.0.0:4470"]
