@@ -427,6 +427,58 @@ func DiscoverLANIP(ctx context.Context, expectedDUID string) (net.IP, error) {
 	return discoverLANIPWithConn(ctx, c, expectedDUID)
 }
 
+// LANDiscoveryResult holds a single LAN search result.
+type LANDiscoveryResult struct {
+	DUID string
+	IP   net.IP
+}
+
+// DiscoverLANAll sends a LAN_SEARCH broadcast and collects all responding
+// printers until the context deadline or cancellation. Returns all unique
+// DUID+IP pairs found. This mirrors Python's cli.pppp.lan_search().
+func DiscoverLANAll(ctx context.Context) ([]LANDiscoveryResult, error) {
+	c, err := OpenBroadcast()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	if err := c.SendPacket(protocol.LanSearch{}, nil); err != nil {
+		return nil, err
+	}
+
+	type seenKey struct{ duid, ip string }
+	seen := make(map[seenKey]bool)
+	var results []LANDiscoveryResult
+
+	for {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		pkt, addr, err := c.Recv(100 * time.Millisecond)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			break
+		}
+		punch, ok := pkt.(protocol.PunchPkt)
+		if !ok {
+			continue
+		}
+		key := seenKey{duid: punch.DUID.String(), ip: addr.IP.String()}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		results = append(results, LANDiscoveryResult{
+			DUID: punch.DUID.String(),
+			IP:   addr.IP,
+		})
+	}
+	return results, nil
+}
+
 func discoverLANIPWithConn(ctx context.Context, c *Client, expectedDUID string) (net.IP, error) {
 	if err := c.SendPacket(protocol.LanSearch{}, nil); err != nil {
 		return nil, err

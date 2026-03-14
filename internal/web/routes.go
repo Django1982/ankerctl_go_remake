@@ -49,6 +49,7 @@ func (s *Server) registerRoutes() {
 	// Printer / selector
 	r.Get("/api/printers", h.PrintersList)
 	r.Post("/api/printers/active", h.PrintersSwitch)
+	r.Post("/api/printers/lan-search", h.LANSearch)
 	r.Post("/api/printer/gcode", h.PrinterGCode)
 	r.Post("/api/printer/control", h.PrinterControl)
 	r.Post("/api/printer/autolevel", h.PrinterAutolevel)

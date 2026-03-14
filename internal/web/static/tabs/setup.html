@@ -228,6 +228,37 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="col-lg-6">
+                                <div class="card h-100">
+                                    <div class="card-header fs-4">
+                                        Refresh Printer IP
+                                    </div>
+                                    <div class="card-body">
+                                        <p class="mb-2">
+                                            Broadcast a LAN search for configured printers and save any matching IP
+                                            updates into <code>default.json</code>.
+                                        </p>
+                                        {{if .Printer}}
+                                        <p class="mb-3 small text-body-secondary">
+                                            Active printer:
+                                            <strong>{{.Printer.Name}}</strong><br>
+                                            Saved IP:
+                                            <code id="printer-ip-display">{{if .Printer.IPAddr}}{{.Printer.IPAddr}}{{else}}not set{{end}}</code>
+                                        </p>
+                                        {{end}}
+                                        <div class="d-flex gap-2 align-items-center flex-wrap">
+                                            <button id="printer-lan-search-btn" type="button" class="btn btn-secondary">
+                                                <i class="bi-router"></i> Find Printer on LAN
+                                            </button>
+                                            <span id="printer-lan-search-result" class="small text-body-secondary"></span>
+                                        </div>
+                                        <div class="form-text mt-2">
+                                            If the saved IP changed, use "Reload Services" afterwards to reconnect with
+                                            the updated address.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
