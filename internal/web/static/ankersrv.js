@@ -82,11 +82,20 @@ $(function () {
 
     /**
      * Get temperature from input
-     * @param {number} temp Temperature in Celsius
-     * @returns {number} Rounded temperature
+     * @param {number} temp Temperature in 1/100 °C
+     * @returns {number} temperature in °C, null if temp is not a number
      */
     function getTemp(temp) {
-        return Math.round(temp / 100);
+        return (typeof(temp) === "number") ? (temp / 100) : null;
+    }
+
+    /**
+     * Get rounded temperature from input
+     * @param {number} temp Temperature in 1/100 °C
+     * @returns {number} Rounded temperature in °C, null if temp is not a number
+     */
+    function getTempRounded(temp) {
+        return (typeof(temp) === "number") ? Math.round(temp / 100) : null;
     }
 
     /**
@@ -386,22 +395,26 @@ $(function () {
                 }
             } else if (data.commandType == 1003) {
                 // Returns Nozzle Temp
-                const current = getTemp(data.currentTemp);
-                const target = getTemp(data.targetTemp);
+                const current = getTempRounded(data.currentTemp);
                 $("#nozzle-temp").text(`${current}°C`);
-                if (!$("#set-nozzle-temp").is(":focus")) {
-                    $("#set-nozzle-temp").val(target);
+                if (data.hasOwnProperty('targetTemp')) {
+                    const target = getTempRounded(data.targetTemp);
+                    if (!$("#set-nozzle-temp").is(":focus")) {
+                        $("#set-nozzle-temp").val(target);
+                    }
                 }
-                pushTempData("nozzle", current, target);
+                pushTempData("nozzle", getTemp(data.currentTemp), getTemp(data.targetTemp));
             } else if (data.commandType == 1004) {
                 // Returns Bed Temp
-                const current = getTemp(data.currentTemp);
-                const target = getTemp(data.targetTemp);
+                const current = getTempRounded(data.currentTemp);
                 $("#bed-temp").text(`${current}°C`);
-                if (!$("#set-bed-temp").is(":focus")) {
-                    $("#set-bed-temp").val(target);
+                if (data.hasOwnProperty('targetTemp')) {
+                    const target = getTempRounded(data.targetTemp);
+                    if (!$("#set-bed-temp").is(":focus")) {
+                        $("#set-bed-temp").val(target);
+                    }
                 }
-                pushTempData("bed", current, target);
+                pushTempData("bed", getTemp(data.currentTemp), getTemp(data.targetTemp));
             } else if (data.commandType == 1006) {
                 // Returns Print Speed
                 const X = getSpeedFactor(data.value);
@@ -1787,8 +1800,14 @@ $(function () {
     let _pendingBed = { c: null, t: null };
 
     function pushTempData(type, current, target) {
-        if (type === "nozzle") { _pendingNozzle = { c: current, t: target }; }
-        else if (type === "bed") { _pendingBed = { c: current, t: target }; }
+        if (type === "nozzle") {
+            _pendingNozzle.c = current;
+            if (target !== null) { _pendingNozzle.t = target; }
+        }
+        else if (type === "bed") {
+            _pendingBed.c = current;
+            if (target !== null) { _pendingBed.t = target; }
+        }
 
         const now = Date.now();
         if (now - lastTempPush < 1000) return; // 1s throttle

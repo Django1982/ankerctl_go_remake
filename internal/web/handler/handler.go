@@ -67,6 +67,12 @@ type StateReloader interface {
 	ReloadState()
 }
 
+// VideoSupportChecker reports whether the active printer has camera support.
+// Implemented by the Server which tracks the current printer model.
+type VideoSupportChecker interface {
+	VideoSupported() bool
+}
+
 // Handler bundles shared dependencies used by HTTP handlers.
 type Handler struct {
 	cfg           *config.Manager
@@ -76,6 +82,7 @@ type Handler struct {
 	devMode       bool
 	render        RenderFunc
 	stateReloader StateReloader
+	videoChecker  VideoSupportChecker
 	logRing       *logging.RingBuffer
 	version       string
 	releases      *releaseCache
@@ -92,6 +99,12 @@ func New(cfg *config.Manager, database *db.DB, svc *service.ServiceManager, log 
 // WithStateReloader sets the StateReloader used by ServerReload and ConfigLogout.
 func (h *Handler) WithStateReloader(r StateReloader) {
 	h.stateReloader = r
+}
+
+// WithVideoChecker sets the VideoSupportChecker used to determine whether the
+// active printer has camera/video support, so templates can hide video UI.
+func (h *Handler) WithVideoChecker(vc VideoSupportChecker) {
+	h.videoChecker = vc
 }
 
 // WithLogRing attaches an in-memory log ring buffer so the debug log viewer
@@ -209,4 +222,13 @@ func (h *Handler) homeAssistant() (*service.HomeAssistantService, bool) {
 	}
 	q, ok := svc.(*service.HomeAssistantService)
 	return q, ok
+}
+
+// videoSupported returns whether the active printer supports video.
+// Falls back to true (default) when no checker is configured.
+func (h *Handler) videoSupported() bool {
+	if h.videoChecker != nil {
+		return h.videoChecker.VideoSupported()
+	}
+	return true
 }

@@ -35,7 +35,9 @@ const (
 
 var defaultUnsupportedPrinters = map[string]struct{}{}
 
-var defaultPrintersWithoutCamera = map[string]struct{}{}
+var defaultPrintersWithoutCamera = map[string]struct{}{
+	"V8110": {}, // AnkerMake M5C — no built-in camera
+}
 
 // Server is the phase-4 HTTP server with middleware stack and stub routes.
 type Server struct {

@@ -23,7 +23,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		PrinterIndexLocked: locked,
 		Configure:          cfg != nil && cfg.IsConfigured(),
 		DebugMode:          h.devMode,
-		VideoSupported:     true, // Default to true, can be refined based on model
+		VideoSupported:     h.videoSupported(),
 		CountryCodes:       countryCodes,
 		RequestHost:        host,
 		RequestPort:        port,
