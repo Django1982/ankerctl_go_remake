@@ -57,6 +57,9 @@ func (s *Server) registerRoutes() {
 	r.Post("/api/printer/autolevel", h.PrinterAutolevel)
 	r.Get("/api/printer/bed-leveling", h.BedLevelingLive)
 	r.Get("/api/printer/bed-leveling/last", h.BedLevelingLast)
+	r.Get("/api/printer/z-offset", h.ZOffsetGet)
+	r.Post("/api/printer/z-offset", h.ZOffsetSet)
+	r.Post("/api/printer/z-offset/nudge", h.ZOffsetNudge)
 
 	// Upload
 	r.Post("/api/files/local", h.SlicerUpload)

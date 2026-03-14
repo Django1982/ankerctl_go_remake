@@ -1620,6 +1620,113 @@ $(function () {
     });
 
     /**
+     * Z-Offset Control
+     */
+    async function loadZOffset() {
+        const display = document.getElementById("z-offset-value");
+        const statusEl = document.getElementById("z-offset-status");
+        if (!display) return;
+        try {
+            const resp = await fetch("/api/printer/z-offset");
+            if (resp.ok) {
+                const data = await resp.json();
+                display.textContent = data.z_offset_mm.toFixed(2) + " mm";
+                if (statusEl) { statusEl.textContent = ""; statusEl.className = "small mt-1"; }
+            } else {
+                const err = await resp.json().catch(() => ({}));
+                display.textContent = "-- mm";
+                if (statusEl) {
+                    statusEl.textContent = err.error || "Unknown error";
+                    statusEl.className = "small mt-1 text-warning";
+                }
+            }
+        } catch (e) {
+            display.textContent = "-- mm";
+            if (statusEl) {
+                statusEl.textContent = "Connection error";
+                statusEl.className = "small mt-1 text-danger";
+            }
+        }
+    }
+
+    async function setZOffset(mm) {
+        const statusEl = document.getElementById("z-offset-status");
+        try {
+            const resp = await fetch("/api/printer/z-offset", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ z_offset_mm: mm })
+            });
+            if (resp.ok) {
+                if (statusEl) { statusEl.textContent = ""; statusEl.className = "small mt-1"; }
+                setTimeout(loadZOffset, 500);
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                if (statusEl) {
+                    statusEl.textContent = data.error || "Set failed";
+                    statusEl.className = "small mt-1 text-danger";
+                }
+            }
+        } catch (e) {
+            if (statusEl) {
+                statusEl.textContent = "Connection error";
+                statusEl.className = "small mt-1 text-danger";
+            }
+        }
+    }
+
+    async function nudgeZOffset(delta) {
+        const statusEl = document.getElementById("z-offset-status");
+        try {
+            const resp = await fetch("/api/printer/z-offset/nudge", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ delta_mm: delta })
+            });
+            if (resp.ok) {
+                if (statusEl) { statusEl.textContent = ""; statusEl.className = "small mt-1"; }
+                setTimeout(loadZOffset, 500);
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                if (statusEl) {
+                    statusEl.textContent = data.error || "Nudge failed";
+                    statusEl.className = "small mt-1 text-danger";
+                }
+            }
+        } catch (e) {
+            if (statusEl) {
+                statusEl.textContent = "Connection error";
+                statusEl.className = "small mt-1 text-danger";
+            }
+        }
+    }
+
+    $("#z-offset-refresh").on("click", function () { loadZOffset(); });
+
+    $("#z-offset-apply").on("click", function () {
+        const input = document.getElementById("z-offset-input");
+        if (!input) return;
+        const val = parseFloat(input.value);
+        if (isNaN(val) || val < -10 || val > 10) {
+            const statusEl = document.getElementById("z-offset-status");
+            if (statusEl) {
+                statusEl.textContent = "Value must be between -10.0 and +10.0 mm";
+                statusEl.className = "small mt-1 text-danger";
+            }
+            return;
+        }
+        setZOffset(val);
+    });
+
+    $("#z-offset-down").on("click", function () { nudgeZOffset(-0.01); });
+    $("#z-offset-up").on("click", function () { nudgeZOffset(0.01); });
+
+    // Load Z-offset on page load when Tools tab content exists
+    if (document.getElementById("z-offset-value")) {
+        loadZOffset();
+    }
+
+    /**
      * Temperature Control Logic
      */
     $("#set-nozzle-temp").on("change", function () {

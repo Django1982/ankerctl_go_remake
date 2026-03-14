@@ -329,6 +329,50 @@
                             </div>
                         </div>
 
+                        <!-- Z-Offset Control -->
+                        <div class="row g-3 mb-3">
+                            <div class="col-lg-5">
+                                <div class="card h-100">
+                                    <div class="card-header fs-4 d-flex justify-content-between align-items-center">
+                                        <span><i class="bi bi-arrows-vertical"></i> Z-Offset</span>
+                                        <button id="z-offset-refresh" type="button" class="btn btn-sm btn-outline-primary">
+                                            <i class="bi bi-arrow-clockwise"></i> Refresh
+                                        </button>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="mb-3">
+                                            <span class="text-muted">Current:</span>
+                                            <span id="z-offset-value" class="fw-semibold ms-1">-- mm</span>
+                                        </div>
+                                        <div class="row g-2 align-items-end mb-3">
+                                            <div class="col">
+                                                <label class="form-label small" for="z-offset-input">Set absolute (mm)</label>
+                                                <input type="number" class="form-control" id="z-offset-input"
+                                                    step="0.01" min="-10" max="10" value="0.00" />
+                                            </div>
+                                            <div class="col-auto">
+                                                <button id="z-offset-apply" type="button" class="btn btn-primary">
+                                                    Apply
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex gap-2">
+                                            <button id="z-offset-down" type="button" class="btn btn-outline-secondary">
+                                                <i class="bi bi-dash"></i> 0.01
+                                            </button>
+                                            <button id="z-offset-up" type="button" class="btn btn-outline-secondary">
+                                                <i class="bi bi-plus"></i> 0.01
+                                            </button>
+                                        </div>
+                                        <div id="z-offset-status" class="small mt-1"></div>
+                                        <div class="form-text mt-2">
+                                            Future: Build-plate presets
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Lower: Compare Snapshots (full width, independent scroll) -->
                         <div class="card">
                             <div class="card-header">
