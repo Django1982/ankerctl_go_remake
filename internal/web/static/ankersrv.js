@@ -956,6 +956,49 @@ $(function () {
         })();
     });
 
+    $("#printer-lan-search-btn").on("click", async function () {
+        const btn = $(this);
+        const status = $("#printer-lan-search-result");
+        btn.prop("disabled", true);
+        status.text("Searching...");
+
+        try {
+            const resp = await fetch("/api/printers/lan-search", { method: "POST" });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                status.text("");
+                flash_message(`LAN search failed: ${data.error || `HTTP ${resp.status}`}`, "danger");
+                return;
+            }
+
+            const active = data.active_printer || {};
+            const savedIp = active.ip_addr || "not set";
+            $("#printer-ip-display").text(savedIp);
+
+            const discovered = Array.isArray(data.discovered) ? data.discovered : [];
+            const summary = discovered
+                .map((item) => `${item.duid} -> ${item.ip_addr}${item.persisted ? " (saved)" : ""}`)
+                .join(", ");
+            status.text(summary || "No matching printers saved.");
+
+            if (active.updated) {
+                flash_message(
+                    `LAN search updated ${active.name || "the active printer"} to ${savedIp}. Reload services to reconnect.`,
+                    "success",
+                );
+            } else if (data.saved_count > 0) {
+                flash_message(`LAN search saved ${data.saved_count} printer IP entr${data.saved_count === 1 ? "y" : "ies"} to default.json.`, "success");
+            } else {
+                flash_message("LAN search found printers, but none matched the configured DUIDs.", "warning");
+            }
+        } catch (err) {
+            status.text("");
+            flash_message(`LAN search failed: ${err}`, "danger");
+        } finally {
+            btn.prop("disabled", false);
+        }
+    });
+
     /**
      * Printer Control Logic
      */
