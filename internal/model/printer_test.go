@@ -201,6 +201,40 @@ func TestPrinter_EmptyMQTTKey_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestIsPrinterSupported_KnownUnsupported(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"V8260", false},
+		{"v8260", false},      // case-insensitive
+		{"V8260 ", false},     // trailing space trimmed
+		{"", true},            // empty → assume supported (fail-open)
+		{"AnkerMake M5", true},
+		{"V8110", true},       // M5C has no camera, but is supported
+		{"V6260", true},       // similar but different model
+	}
+	for _, c := range cases {
+		got := IsPrinterSupported(c.model)
+		if got != c.want {
+			t.Errorf("IsPrinterSupported(%q) = %v, want %v", c.model, got, c.want)
+		}
+	}
+}
+
+func TestUnsupportedPrinterModels_ContainsV8260(t *testing.T) {
+	found := false
+	for _, m := range UnsupportedPrinterModels {
+		if strings.EqualFold(m, "V8260") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("UnsupportedPrinterModels does not contain V8260")
+	}
+}
+
 func TestTimeFromUnixFloat_IntegerTimestamp(t *testing.T) {
 	result := timeFromUnixFloat(1700000000.0)
 	if result.Unix() != 1700000000 {
