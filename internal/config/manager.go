@@ -104,6 +104,19 @@ func (m *Manager) loadLocked() (*model.Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
+	// Strip unsupported devices (e.g. eufyMake UV Printer E1, V8260) so they
+	// never appear in the printer list, can't be selected, and don't trigger
+	// service errors. Log once so the omission is visible in debug output.
+	filtered := cfg.Printers[:0]
+	for _, p := range cfg.Printers {
+		if model.IsPrinterSupported(p.Model) {
+			filtered = append(filtered, p)
+		} else {
+			slog.Debug("config: ignoring unsupported printer model", "model", p.Model, "name", p.Name)
+		}
+	}
+	cfg.Printers = filtered
+
 	return &cfg, nil
 }
 

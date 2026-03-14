@@ -50,11 +50,12 @@ func makePrinterModel(name, sn, modelCode string) model.Printer {
 	}
 }
 
-// TestPrintersList_SupportedField_ReflectsModel verifies that /api/printers
-// returns "supported": false for V8260 and "supported": true for M5.
-func TestPrintersList_SupportedField_ReflectsModel(t *testing.T) {
+// TestPrintersList_OnlyContainsSupportedPrinters verifies that /api/printers
+// never exposes unsupported models — V8260 is filtered at config-load time and
+// therefore never reaches the handler's printer slice.
+func TestPrintersList_OnlyContainsSupportedPrinters(t *testing.T) {
+	// Handler receives only the supported printer (V8260 was stripped by config.Load).
 	printers := []model.Printer{
-		makePrinterModel("UV Printer", "SN-UV", "V8260"),
 		makePrinterModel("AnkerMake M5", "SN-M5", "AnkerMake M5"),
 	}
 	h := newTestHandlerWithPrinters(t, printers)
@@ -68,57 +69,18 @@ func TestPrintersList_SupportedField_ReflectsModel(t *testing.T) {
 
 	var resp struct {
 		Printers []struct {
-			Index     int    `json:"index"`
-			Model     string `json:"model"`
-			Supported bool   `json:"supported"`
+			Index int    `json:"index"`
+			Model string `json:"model"`
 		} `json:"printers"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Printers) != 2 {
-		t.Fatalf("printers count = %d, want 2", len(resp.Printers))
+	if len(resp.Printers) != 1 {
+		t.Fatalf("printers count = %d, want 1", len(resp.Printers))
 	}
-	for _, p := range resp.Printers {
-		switch p.Model {
-		case "V8260":
-			if p.Supported {
-				t.Errorf("printer[%d] model=%q: supported=true, want false", p.Index, p.Model)
-			}
-		case "AnkerMake M5":
-			if !p.Supported {
-				t.Errorf("printer[%d] model=%q: supported=false, want true", p.Index, p.Model)
-			}
-		}
-	}
-}
-
-// TestPrintersSwitch_ToUnsupportedDevice_Returns403 ensures that switching
-// to a V8260 device returns 403 Forbidden (Python parity).
-func TestPrintersSwitch_ToUnsupportedDevice_Returns403(t *testing.T) {
-	// Active=0 (M5), target=1 (V8260)
-	printers := []model.Printer{
-		makePrinterModel("AnkerMake M5", "SN-M5", "AnkerMake M5"),
-		makePrinterModel("UV Printer", "SN-UV", "V8260"),
-	}
-	h := newTestHandlerWithPrinters(t, printers)
-
-	body := bytes.NewBufferString(`{"index":1}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/printers/active", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.PrintersSwitch(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", w.Code)
-	}
-
-	var resp map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp["error"] == "" {
-		t.Error("expected non-empty 'error' field in 403 response")
+	if resp.Printers[0].Model != "AnkerMake M5" {
+		t.Errorf("unexpected model %q", resp.Printers[0].Model)
 	}
 }
 
