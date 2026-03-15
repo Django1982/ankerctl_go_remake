@@ -75,6 +75,8 @@ func (s *Server) registerRoutes() {
 	r.Post("/api/settings/timelapse", h.SettingsTimelapseUpdate)
 	r.Get("/api/settings/mqtt", h.SettingsMQTTGet)
 	r.Post("/api/settings/mqtt", h.SettingsMQTTUpdate)
+	r.Get("/api/settings/filament-service", h.SettingsFilamentServiceGet)
+	r.Post("/api/settings/filament-service", h.SettingsFilamentServiceUpdate)
 
 	// History
 	r.Get("/api/history", h.HistoryList)

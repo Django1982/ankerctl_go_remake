@@ -8,14 +8,15 @@ import (
 )
 
 var protectedGETPaths = map[string]bool{
-	"/api/ankerctl/server/reload": true,
-	"/api/debug/state":            true,
-	"/api/debug/logs":             true,
-	"/api/debug/services":         true,
-	"/api/settings/mqtt":          true,
-	"/api/notifications/settings": true,
-	"/api/printers":               true,
-	"/api/history":                true,
+	"/api/ankerctl/server/reload":       true,
+	"/api/debug/state":                  true,
+	"/api/debug/logs":                   true,
+	"/api/debug/services":               true,
+	"/api/settings/mqtt":                true,
+	"/api/settings/filament-service":    true,
+	"/api/notifications/settings":       true,
+	"/api/printers":                     true,
+	"/api/history":                      true,
 }
 
 var setupPaths = map[string]bool{

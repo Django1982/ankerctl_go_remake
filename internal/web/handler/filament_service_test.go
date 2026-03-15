@@ -31,18 +31,86 @@ func TestBuildFilamentMoveGcode(t *testing.T) {
 	if gcode == "" {
 		t.Fatal("expected non-empty gcode")
 	}
-	// Check it contains M83 (relative extrusion) and M82 (absolute).
+	// Must contain M83 (relative extrusion), G1 extrude, M400 (wait), M82 (absolute).
 	if !contains(gcode, "M83") || !contains(gcode, "M82") || !contains(gcode, "M400") {
 		t.Errorf("gcode missing expected commands: %s", gcode)
 	}
 	if !contains(gcode, "G1 E40 F240") {
 		t.Errorf("expected G1 E40 F240, got: %s", gcode)
 	}
+	// Must NOT contain G92 E0 (extruder reset removed per Python update).
+	if contains(gcode, "G92") {
+		t.Errorf("gcode must not contain G92, got: %s", gcode)
+	}
+	// Order check: M83 before G1, M400 before M82.
+	wantLines := []string{"M83", "G1 E40 F240", "M400", "M82"}
+	lines := splitLines(gcode)
+	for i, want := range wantLines {
+		if i >= len(lines) {
+			t.Fatalf("gcode has only %d lines, want at least %d; got:\n%s", len(lines), len(wantLines), gcode)
+		}
+		if lines[i] != want {
+			t.Errorf("line[%d] = %q, want %q", i, lines[i], want)
+		}
+	}
+	if len(lines) != len(wantLines) {
+		t.Errorf("gcode has %d lines, want %d:\n%s", len(lines), len(wantLines), gcode)
+	}
 
 	// Retract (negative).
 	retract := buildFilamentMoveGcode(-25.5)
 	if !contains(retract, "G1 E-25.5 F240") {
 		t.Errorf("expected G1 E-25.5 F240, got: %s", retract)
+	}
+	if contains(retract, "G92") {
+		t.Errorf("retract gcode must not contain G92, got: %s", retract)
+	}
+}
+
+func TestBuildFilamentMoveGcode_Feedrate(t *testing.T) {
+	// Feedrate must always be 240 regardless of input.
+	for _, mm := range []float64{1.0, 40.0, 100.0, -40.0} {
+		gcode := buildFilamentMoveGcode(mm)
+		if !contains(gcode, "F240") {
+			t.Errorf("buildFilamentMoveGcode(%v) missing F240: %s", mm, gcode)
+		}
+	}
+}
+
+func TestSerializeFilamentSwapState_NewFields(t *testing.T) {
+	// Ensure new fields are included in serialization.
+	state := &filamentSwapState{
+		Token:                  "tok",
+		CreatedAt:              1000,
+		Mode:                   "manual",
+		Phase:                  phaseAwaitManual,
+		Message:                "test message",
+		ManualSwapPreheatTempC: 140,
+	}
+	result := serializeFilamentSwapState(state)
+	if result["pending"] != true {
+		t.Errorf("pending = %v, want true", result["pending"])
+	}
+	swap, ok := result["swap"].(map[string]any)
+	if !ok {
+		t.Fatal("swap is not a map")
+	}
+	if swap["mode"] != "manual" {
+		t.Errorf("mode = %v, want manual", swap["mode"])
+	}
+	if swap["phase"] != phaseAwaitManual {
+		t.Errorf("phase = %v, want %s", swap["phase"], phaseAwaitManual)
+	}
+	if swap["manual_swap_preheat_temp_c"] != 140 {
+		t.Errorf("manual_swap_preheat_temp_c = %v, want 140", swap["manual_swap_preheat_temp_c"])
+	}
+	// message non-empty → must not be nil
+	if swap["message"] == nil {
+		t.Errorf("message = nil, want non-nil for non-empty message")
+	}
+	// error empty → must be nil
+	if swap["error"] != nil {
+		t.Errorf("error = %v, want nil for empty error", swap["error"])
 	}
 }
 
@@ -93,18 +161,25 @@ func TestSerializeFilamentSwapState(t *testing.T) {
 		t.Errorf("nil state: swap = %v, want nil", result["swap"])
 	}
 
-	// non-nil state.
+	// non-nil state with pointer profile fields.
+	unloadID := int64(1)
+	unloadName := "PLA"
+	loadID := int64(2)
+	loadName := "PETG"
 	state := &filamentSwapState{
-		Token:             "abc123",
-		CreatedAt:         1000,
-		UnloadProfileID:   1,
-		UnloadProfileName: "PLA",
-		LoadProfileID:     2,
-		LoadProfileName:   "PETG",
-		UnloadTempC:       210,
-		LoadTempC:         230,
-		UnloadLengthMM:    40,
-		LoadLengthMM:      50,
+		Token:                  "abc123",
+		CreatedAt:              1000,
+		Mode:                   "legacy",
+		Phase:                  phaseAwaitManual,
+		UnloadProfileID:        &unloadID,
+		UnloadProfileName:      &unloadName,
+		LoadProfileID:          &loadID,
+		LoadProfileName:        &loadName,
+		UnloadTempC:            210,
+		LoadTempC:              230,
+		UnloadLengthMM:         40,
+		LoadLengthMM:           50,
+		ManualSwapPreheatTempC: 140,
 	}
 	result = serializeFilamentSwapState(state)
 	if result["pending"] != true {
@@ -116,6 +191,12 @@ func TestSerializeFilamentSwapState(t *testing.T) {
 	}
 	if swap["token"] != "abc123" {
 		t.Errorf("token = %v, want abc123", swap["token"])
+	}
+	if swap["mode"] != "legacy" {
+		t.Errorf("mode = %v, want legacy", swap["mode"])
+	}
+	if swap["unload_profile_id"] != &unloadID {
+		t.Errorf("unload_profile_id = %v, want %v", swap["unload_profile_id"], &unloadID)
 	}
 }
 
@@ -130,4 +211,19 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }

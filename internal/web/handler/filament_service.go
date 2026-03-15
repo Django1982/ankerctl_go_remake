@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/django1982/ankerctl/internal/db"
+	"github.com/django1982/ankerctl/internal/model"
 	"github.com/django1982/ankerctl/internal/service"
 )
 
@@ -25,22 +27,45 @@ const (
 	filamentServiceHeatToleranceC  = 5
 )
 
+// Swap phase constants — used in phase-guard checks.
+const (
+	phaseHeatingUnload  = "heating_unload"
+	phaseUnloading      = "unloading"
+	phaseHeatingLoad    = "heating_load"
+	phaseLoading        = "loading"
+	phaseAwaitManual    = "await_manual_swap"
+	phaseError          = "error"
+)
+
+// activePhases is the set of phases during which confirm/cancel are blocked (409).
+var activePhases = map[string]bool{
+	phaseHeatingUnload: true,
+	phaseUnloading:     true,
+	phaseHeatingLoad:   true,
+	phaseLoading:       true,
+}
+
 // filamentSwapState holds the state of an in-progress filament swap.
 type filamentSwapState struct {
-	Token             string  `json:"token"`
-	CreatedAt         int64   `json:"created_at"`
-	UnloadProfileID   int64   `json:"unload_profile_id"`
-	UnloadProfileName string  `json:"unload_profile_name"`
-	LoadProfileID     int64   `json:"load_profile_id"`
-	LoadProfileName   string  `json:"load_profile_name"`
-	UnloadTempC       int     `json:"unload_temp_c"`
-	LoadTempC         int     `json:"load_temp_c"`
-	UnloadLengthMM    float64 `json:"unload_length_mm"`
-	LoadLengthMM      float64 `json:"load_length_mm"`
+	Token                  string  `json:"token"`
+	CreatedAt              int64   `json:"created_at"`
+	Mode                   string  `json:"mode"`    // "manual" | "legacy"
+	Phase                  string  `json:"phase"`   // see phase constants above
+	Message                string  `json:"message"`
+	Error                  string  `json:"error"`
+	UnloadProfileID        *int64  `json:"unload_profile_id"`
+	UnloadProfileName      *string `json:"unload_profile_name"`
+	LoadProfileID          *int64  `json:"load_profile_id"`
+	LoadProfileName        *string `json:"load_profile_name"`
+	UnloadTempC            int     `json:"unload_temp_c"`
+	LoadTempC              int     `json:"load_temp_c"`
+	UnloadLengthMM         float64 `json:"unload_length_mm"`
+	LoadLengthMM           float64 `json:"load_length_mm"`
+	ManualSwapPreheatTempC int     `json:"manual_swap_preheat_temp_c"`
 }
 
 // filamentSwapManager holds the mutex-protected swap state.
-// It lives on the Handler so it's shared across requests.
+// It lives as package-level vars so it's shared across requests.
 var (
 	filamentSwapMu    sync.Mutex
 	filamentSwapValue *filamentSwapState
@@ -151,15 +176,15 @@ func formatExtrusionMM(lengthMM float64) string {
 }
 
 // buildFilamentMoveGcode builds the GCode for extrude/retract.
+// Feedrate is always 240 mm/min. Order: M83, G1, M400, M82.
+// No G92 E0 lines — the printer's relative mode is used directly.
 func buildFilamentMoveGcode(deltaMM float64) string {
 	extrusion := formatExtrusionMM(deltaMM)
 	return strings.Join([]string{
 		"M83",
-		"G92 E0",
 		fmt.Sprintf("G1 E%s F%d", extrusion, filamentServiceFeedrateMMMin),
-		"G92 E0",
-		"M82",
 		"M400",
+		"M82",
 	}, "\n")
 }
 
@@ -168,21 +193,36 @@ func serializeFilamentSwapState(state *filamentSwapState) map[string]any {
 	if state == nil {
 		return map[string]any{"pending": false, "swap": nil}
 	}
+
+	swap := map[string]any{
+		"token":                    state.Token,
+		"created_at":               state.CreatedAt,
+		"mode":                     state.Mode,
+		"phase":                    state.Phase,
+		"message":                  nilIfEmpty(state.Message),
+		"error":                    nilIfEmpty(state.Error),
+		"unload_profile_id":        state.UnloadProfileID,
+		"unload_profile_name":      state.UnloadProfileName,
+		"load_profile_id":          state.LoadProfileID,
+		"load_profile_name":        state.LoadProfileName,
+		"unload_temp_c":            state.UnloadTempC,
+		"load_temp_c":              state.LoadTempC,
+		"unload_length_mm":         state.UnloadLengthMM,
+		"load_length_mm":           state.LoadLengthMM,
+		"manual_swap_preheat_temp_c": state.ManualSwapPreheatTempC,
+	}
 	return map[string]any{
 		"pending": true,
-		"swap": map[string]any{
-			"token":                state.Token,
-			"created_at":           state.CreatedAt,
-			"unload_profile_id":    state.UnloadProfileID,
-			"unload_profile_name":  state.UnloadProfileName,
-			"load_profile_id":      state.LoadProfileID,
-			"load_profile_name":    state.LoadProfileName,
-			"unload_temp_c":        state.UnloadTempC,
-			"load_temp_c":          state.LoadTempC,
-			"unload_length_mm":     state.UnloadLengthMM,
-			"load_length_mm":       state.LoadLengthMM,
-		},
+		"swap":    swap,
 	}
+}
+
+// nilIfEmpty returns nil for empty strings so JSON serializes as null.
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // generateToken generates a random hex token of n bytes (2*n hex chars).
@@ -275,6 +315,238 @@ func (h *Handler) returnMqtt() {
 	h.svc.Return("mqttqueue")
 }
 
+// loadFilamentServiceConfig reads the filament service config from disk,
+// returning defaults when no config is stored yet.
+func (h *Handler) loadFilamentServiceConfig() model.FilamentServiceConfig {
+	cfg, err := h.loadConfig()
+	if err != nil || cfg == nil {
+		return model.DefaultFilamentServiceConfig()
+	}
+	fs := cfg.FilamentService
+	// Always clamp in case of stale on-disk data.
+	fs.ManualSwapPreheatTempC = model.ClampManualSwapPreheatTempC(fs.ManualSwapPreheatTempC)
+	return fs
+}
+
+// swapStateUpdate applies updates to the global swap state under the mutex.
+// A no-op when no state exists or the token doesn't match.
+func swapStateUpdate(token string, fn func(s *filamentSwapState)) {
+	filamentSwapMu.Lock()
+	defer filamentSwapMu.Unlock()
+	if filamentSwapValue == nil || filamentSwapValue.Token != token {
+		return
+	}
+	fn(filamentSwapValue)
+}
+
+// swapStateClear removes the global swap state if the token matches.
+// Returns a copy of the cleared state, or nil if nothing was cleared.
+func swapStateClear(token string) *filamentSwapState {
+	filamentSwapMu.Lock()
+	defer filamentSwapMu.Unlock()
+	if filamentSwapValue == nil || filamentSwapValue.Token != token {
+		return nil
+	}
+	copy := *filamentSwapValue
+	filamentSwapValue = nil
+	return &copy
+}
+
+// swapStateGet returns a copy of the current state if the token matches.
+func swapStateGet(token string) *filamentSwapState {
+	filamentSwapMu.Lock()
+	defer filamentSwapMu.Unlock()
+	if filamentSwapValue == nil || filamentSwapValue.Token != token {
+		return nil
+	}
+	copy := *filamentSwapValue
+	return &copy
+}
+
+// runLegacySwapUnload runs in a goroutine: heats + unloads, then waits for confirm.
+func (h *Handler) runLegacySwapUnload(token string) {
+	state := swapStateGet(token)
+	if state == nil {
+		return
+	}
+
+	gcode := buildFilamentMoveGcode(-state.UnloadLengthMM)
+
+	svc, borrowErr := h.svc.Borrow("mqttqueue")
+	if borrowErr != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			errMsg := "MQTT service unavailable"
+			s.Phase = phaseError
+			s.Message = "Automatic unload failed: " + errMsg
+			s.Error = errMsg
+		})
+		return
+	}
+	mqtt, ok := svc.(*service.MqttQueue)
+	if !ok {
+		h.svc.Return("mqttqueue")
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			errMsg := "MQTT service type mismatch"
+			s.Phase = phaseError
+			s.Message = "Automatic unload failed: " + errMsg
+			s.Error = errMsg
+		})
+		return
+	}
+	defer h.svc.Return("mqttqueue")
+
+	if err := assertFilamentServiceReady(mqtt); err != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseError
+			s.Message = "Automatic unload failed: " + err.Error()
+			s.Error = err.Error()
+		})
+		return
+	}
+
+	currentTemp := mqtt.NozzleTemp()
+	if currentTemp == nil || *currentTemp < (state.UnloadTempC-filamentServiceHeatToleranceC) {
+		unloadTempC := state.UnloadTempC
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseHeatingUnload
+			s.Message = fmt.Sprintf("Heating nozzle to %d\u00b0C for unload...", unloadTempC)
+			s.Error = ""
+		})
+		if err := mqtt.SendGCode(context.Background(), fmt.Sprintf("M104 S%d", state.UnloadTempC)); err != nil {
+			swapStateUpdate(token, func(s *filamentSwapState) {
+				s.Phase = phaseError
+				s.Message = "Automatic unload failed: " + err.Error()
+				s.Error = err.Error()
+			})
+			return
+		}
+		if _, err := waitForNozzle(mqtt, state.UnloadTempC); err != nil {
+			swapStateUpdate(token, func(s *filamentSwapState) {
+				s.Phase = phaseError
+				s.Message = "Automatic unload failed: " + err.Error()
+				s.Error = err.Error()
+			})
+			return
+		}
+	}
+
+	profileName := ""
+	if state.UnloadProfileName != nil {
+		profileName = *state.UnloadProfileName
+	}
+	unloadLengthMM := state.UnloadLengthMM
+	swapStateUpdate(token, func(s *filamentSwapState) {
+		s.Phase = phaseUnloading
+		s.Message = fmt.Sprintf("Retracting %.2g mm for %s...", unloadLengthMM, profileName)
+		s.Error = ""
+	})
+	if err := mqtt.SendGCode(context.Background(), gcode); err != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseError
+			s.Message = "Automatic unload failed: " + err.Error()
+			s.Error = err.Error()
+		})
+		return
+	}
+
+	swapStateUpdate(token, func(s *filamentSwapState) {
+		s.Phase = phaseAwaitManual
+		s.Message = "Unload finished. Release the extruder lever, remove the old filament, " +
+			"insert the new filament, then confirm."
+		s.Error = ""
+	})
+}
+
+// runLegacySwapLoad runs in a goroutine: heats + loads/purges, then clears state.
+func (h *Handler) runLegacySwapLoad(token string) {
+	state := swapStateGet(token)
+	if state == nil {
+		return
+	}
+
+	gcode := buildFilamentMoveGcode(state.LoadLengthMM)
+
+	svc, borrowErr := h.svc.Borrow("mqttqueue")
+	if borrowErr != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			errMsg := "MQTT service unavailable"
+			s.Phase = phaseError
+			s.Message = "Automatic load / purge failed: " + errMsg
+			s.Error = errMsg
+		})
+		return
+	}
+	mqtt, ok := svc.(*service.MqttQueue)
+	if !ok {
+		h.svc.Return("mqttqueue")
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			errMsg := "MQTT service type mismatch"
+			s.Phase = phaseError
+			s.Message = "Automatic load / purge failed: " + errMsg
+			s.Error = errMsg
+		})
+		return
+	}
+	defer h.svc.Return("mqttqueue")
+
+	if err := assertFilamentServiceReady(mqtt); err != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseError
+			s.Message = "Automatic load / purge failed: " + err.Error()
+			s.Error = err.Error()
+		})
+		return
+	}
+
+	currentTemp := mqtt.NozzleTemp()
+	if currentTemp == nil || *currentTemp < (state.LoadTempC-filamentServiceHeatToleranceC) {
+		loadTempC := state.LoadTempC
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseHeatingLoad
+			s.Message = fmt.Sprintf("Heating nozzle to %d\u00b0C for load / purge...", loadTempC)
+			s.Error = ""
+		})
+		if err := mqtt.SendGCode(context.Background(), fmt.Sprintf("M104 S%d", state.LoadTempC)); err != nil {
+			swapStateUpdate(token, func(s *filamentSwapState) {
+				s.Phase = phaseError
+				s.Message = "Automatic load / purge failed: " + err.Error()
+				s.Error = err.Error()
+			})
+			return
+		}
+		if _, err := waitForNozzle(mqtt, state.LoadTempC); err != nil {
+			swapStateUpdate(token, func(s *filamentSwapState) {
+				s.Phase = phaseError
+				s.Message = "Automatic load / purge failed: " + err.Error()
+				s.Error = err.Error()
+			})
+			return
+		}
+	}
+
+	profileName := ""
+	if state.LoadProfileName != nil {
+		profileName = *state.LoadProfileName
+	}
+	loadLengthMM := state.LoadLengthMM
+	swapStateUpdate(token, func(s *filamentSwapState) {
+		s.Phase = phaseLoading
+		s.Message = fmt.Sprintf("Loading / purging %s (%.2g mm)...", profileName, loadLengthMM)
+		s.Error = ""
+	})
+	if err := mqtt.SendGCode(context.Background(), gcode); err != nil {
+		swapStateUpdate(token, func(s *filamentSwapState) {
+			s.Phase = phaseError
+			s.Message = "Automatic load / purge failed: " + err.Error()
+			s.Error = err.Error()
+		})
+		return
+	}
+
+	// Success: clear state.
+	swapStateClear(token)
+}
+
 // FilamentServiceSwapState returns the current swap state (GET, unprotected).
 func (h *Handler) FilamentServiceSwapState(w http.ResponseWriter, _ *http.Request) {
 	filamentSwapMu.Lock()
@@ -308,12 +580,12 @@ func (h *Handler) FilamentServicePreheat(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{
-		"status":       "ok",
-		"action":       "preheat",
-		"profile_id":   profile.ID,
-		"profile_name": profile.Name,
+		"status":        "ok",
+		"action":        "preheat",
+		"profile_id":    profile.ID,
+		"profile_name":  profile.Name,
 		"target_temp_c": tempC,
-		"gcode":        gcode,
+		"gcode":         gcode,
 	})
 }
 
@@ -392,41 +664,65 @@ func (h *Handler) FilamentServiceMove(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// FilamentServiceSwapStart begins a filament swap (unload).
+// FilamentServiceSwapStart begins a filament swap.
+//
+// In manual mode (allow_legacy_swap=false, default): sends M104 S{preheat_temp},
+// stores state with mode="manual", phase="await_manual_swap", returns immediately.
+//
+// In legacy mode (allow_legacy_swap=true): requires unload_profile_id, load_profile_id,
+// unload_length_mm, load_length_mm. Starts a background goroutine for unload.
 func (h *Handler) FilamentServiceSwapStart(w http.ResponseWriter, r *http.Request) {
 	payload := h.readJSONPayload(r)
 
-	unloadProfile, err := h.filamentServiceProfile(payload, "unload_profile_id")
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	loadProfile, err := h.filamentServiceProfile(payload, "load_profile_id")
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	unloadTempC, err := filamentServiceTemp(unloadProfile)
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	loadTempC, err := filamentServiceTemp(loadProfile)
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	unloadLengthMM, err := filamentServiceLength(payload, "unload_length_mm")
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	loadLengthMM, err := filamentServiceLength(payload, "load_length_mm")
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
+	fsCfg := h.loadFilamentServiceConfig()
+	allowLegacy := fsCfg.AllowLegacySwap
+	preheatTempC := fsCfg.ManualSwapPreheatTempC
+
+	// Profile/length fields are only required in legacy mode.
+	var (
+		unloadProfile *db.FilamentProfile
+		loadProfile   *db.FilamentProfile
+		unloadTempC   = preheatTempC
+		loadTempC     = preheatTempC
+		unloadLengthMM float64
+		loadLengthMM   float64
+	)
+
+	if allowLegacy {
+		var err error
+		unloadProfile, err = h.filamentServiceProfile(payload, "unload_profile_id")
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
+		loadProfile, err = h.filamentServiceProfile(payload, "load_profile_id")
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
+		unloadTempC, err = filamentServiceTemp(unloadProfile)
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
+		loadTempC, err = filamentServiceTemp(loadProfile)
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
+		unloadLengthMM, err = filamentServiceLength(payload, "unload_length_mm")
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
+		loadLengthMM, err = filamentServiceLength(payload, "load_length_mm")
+		if err != nil {
+			h.writeFilamentServiceError(w, err)
+			return
+		}
 	}
 
+	// Conflict check — only one swap in progress at a time.
 	filamentSwapMu.Lock()
 	if filamentSwapValue != nil {
 		filamentSwapMu.Unlock()
@@ -435,60 +731,112 @@ func (h *Handler) FilamentServiceSwapStart(w http.ResponseWriter, r *http.Reques
 	}
 	filamentSwapMu.Unlock()
 
-	gcode := buildFilamentMoveGcode(-unloadLengthMM)
+	mode := "manual"
+	phase := phaseAwaitManual
+	message := fmt.Sprintf(
+		"Recommended method enabled: preheating nozzle to %d\u00b0C. "+
+			"Release the extruder lever, remove the filament manually, insert the new filament, "+
+			"then confirm. Use Quick Extrude afterward if you need to purge.", preheatTempC)
 
-	mqtt, err := h.borrowMqttForFilament()
-	if err != nil {
-		h.writeFilamentServiceError(w, err)
-		return
-	}
-	defer h.returnMqtt()
-
-	currentTemp := mqtt.NozzleTemp()
-	if currentTemp == nil || *currentTemp < (unloadTempC-filamentServiceHeatToleranceC) {
-		if sendErr := mqtt.SendGCode(r.Context(), fmt.Sprintf("M104 S%d", unloadTempC)); sendErr != nil {
-			h.writeError(w, http.StatusBadGateway, sendErr.Error())
-			return
+	if allowLegacy {
+		mode = "legacy"
+		phase = phaseHeatingUnload
+		profileName := ""
+		if unloadProfile != nil {
+			profileName = unloadProfile.Name
 		}
-		if _, err := waitForNozzle(mqtt, unloadTempC); err != nil {
-			h.writeFilamentServiceError(w, err)
-			return
-		}
-	}
-	if err := mqtt.SendGCode(r.Context(), gcode); err != nil {
-		h.writeError(w, http.StatusBadGateway, err.Error())
-		return
+		message = fmt.Sprintf("Heating for automatic unload of %s at %d\u00b0C.",
+			profileName, unloadTempC)
 	}
 
 	state := &filamentSwapState{
-		Token:             generateToken(12),
-		CreatedAt:         time.Now().Unix(),
-		UnloadProfileID:   unloadProfile.ID,
-		UnloadProfileName: unloadProfile.Name,
-		LoadProfileID:     loadProfile.ID,
-		LoadProfileName:   loadProfile.Name,
-		UnloadTempC:       unloadTempC,
-		LoadTempC:         loadTempC,
-		UnloadLengthMM:    unloadLengthMM,
-		LoadLengthMM:      loadLengthMM,
+		Token:                  generateToken(12),
+		CreatedAt:              time.Now().Unix(),
+		Mode:                   mode,
+		Phase:                  phase,
+		Message:                message,
+		ManualSwapPreheatTempC: preheatTempC,
+		UnloadTempC:            unloadTempC,
+		LoadTempC:              loadTempC,
+		UnloadLengthMM:         unloadLengthMM,
+		LoadLengthMM:           loadLengthMM,
 	}
+	if unloadProfile != nil {
+		id := unloadProfile.ID
+		name := unloadProfile.Name
+		state.UnloadProfileID = &id
+		state.UnloadProfileName = &name
+	}
+	if loadProfile != nil {
+		id := loadProfile.ID
+		name := loadProfile.Name
+		state.LoadProfileID = &id
+		state.LoadProfileName = &name
+	}
+
+	// Register state before sending GCode so the background goroutine can find it.
 	filamentSwapMu.Lock()
 	filamentSwapValue = state
 	filamentSwapMu.Unlock()
 
-	resp := map[string]any{
-		"status": "ok",
-		"message": fmt.Sprintf("Unload started for %s. Swap the filament, then confirm to load %s.",
-			unloadProfile.Name, loadProfile.Name),
-		"gcode": gcode,
+	// Borrow MQTT, assert ready, then kick off the appropriate action.
+	svc, borrowErr := h.svc.Borrow("mqttqueue")
+	if borrowErr != nil {
+		swapStateClear(state.Token)
+		h.writeFilamentServiceError(w, &connectionError{"MQTT service unavailable"})
+		return
 	}
-	for k, v := range serializeFilamentSwapState(state) {
+	mqtt, ok := svc.(*service.MqttQueue)
+	if !ok {
+		h.svc.Return("mqttqueue")
+		swapStateClear(state.Token)
+		h.writeFilamentServiceError(w, &connectionError{"MQTT service type mismatch"})
+		return
+	}
+
+	if err := assertFilamentServiceReady(mqtt); err != nil {
+		h.svc.Return("mqttqueue")
+		swapStateClear(state.Token)
+		h.writeFilamentServiceError(w, err)
+		return
+	}
+
+	var gcodeResp any
+	if allowLegacy {
+		// Start background goroutine; release borrow first so the goroutine can re-borrow.
+		h.svc.Return("mqttqueue")
+		go h.runLegacySwapUnload(state.Token)
+	} else {
+		// Manual mode: just send preheat and return.
+		sendErr := mqtt.SendGCode(r.Context(), fmt.Sprintf("M104 S%d", preheatTempC))
+		h.svc.Return("mqttqueue")
+		if sendErr != nil {
+			swapStateClear(state.Token)
+			h.writeError(w, http.StatusBadGateway, sendErr.Error())
+			return
+		}
+		gcodeResp = fmt.Sprintf("M104 S%d", preheatTempC)
+	}
+
+	filamentSwapMu.Lock()
+	currentState := filamentSwapValue
+	filamentSwapMu.Unlock()
+
+	resp := map[string]any{
+		"status":  "ok",
+		"message": state.Message,
+		"gcode":   gcodeResp,
+	}
+	for k, v := range serializeFilamentSwapState(currentState) {
 		resp[k] = v
 	}
 	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // FilamentServiceSwapConfirm completes a swap (load new filament).
+//
+// Manual mode: clears state immediately, returns pending=false.
+// Legacy mode: launches background load goroutine, returns current state.
 func (h *Handler) FilamentServiceSwapConfirm(w http.ResponseWriter, r *http.Request) {
 	payload := h.readJSONPayload(r)
 
@@ -504,49 +852,93 @@ func (h *Handler) FilamentServiceSwapConfirm(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusConflict, "Swap token mismatch")
 		return
 	}
+	if activePhases[state.Phase] {
+		filamentSwapMu.Unlock()
+		h.writeError(w, http.StatusConflict, "Swap stage is still running; wait for it to finish first")
+		return
+	}
+	stateCopy := *state
 	filamentSwapMu.Unlock()
 
-	gcode := buildFilamentMoveGcode(state.LoadLengthMM)
+	// Manual mode: just clear and return done.
+	if stateCopy.Mode == "manual" {
+		swapStateClear(stateCopy.Token)
+		h.writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"message": "Manual swap marked complete. If needed, use Quick Extrude to prime " +
+				"the new filament.",
+			"completed_swap": stateCopy,
+			"pending":        false,
+			"swap":           nil,
+		})
+		return
+	}
 
-	mqtt, err := h.borrowMqttForFilament()
-	if err != nil {
+	// Legacy mode: transition to heating_load and start background load.
+	profileName := ""
+	if stateCopy.LoadProfileName != nil {
+		profileName = *stateCopy.LoadProfileName
+	}
+	swapStateUpdate(stateCopy.Token, func(s *filamentSwapState) {
+		s.Phase = phaseHeatingLoad
+		s.Message = fmt.Sprintf("Heating for automatic load / purge of %s at %d\u00b0C.",
+			profileName, stateCopy.LoadTempC)
+		s.Error = ""
+	})
+
+	// Verify MQTT is accessible before launching goroutine.
+	svc, borrowErr := h.svc.Borrow("mqttqueue")
+	if borrowErr != nil {
+		swapStateUpdate(stateCopy.Token, func(s *filamentSwapState) {
+			errMsg := "MQTT service unavailable"
+			s.Phase = phaseError
+			s.Message = errMsg
+			s.Error = errMsg
+		})
+		h.writeFilamentServiceError(w, &connectionError{"MQTT service unavailable"})
+		return
+	}
+	mqtt, ok := svc.(*service.MqttQueue)
+	if !ok {
+		h.svc.Return("mqttqueue")
+		swapStateUpdate(stateCopy.Token, func(s *filamentSwapState) {
+			errMsg := "MQTT service type mismatch"
+			s.Phase = phaseError
+			s.Message = errMsg
+			s.Error = errMsg
+		})
+		h.writeFilamentServiceError(w, &connectionError{"MQTT service type mismatch"})
+		return
+	}
+	if err := assertFilamentServiceReady(mqtt); err != nil {
+		h.svc.Return("mqttqueue")
+		swapStateUpdate(stateCopy.Token, func(s *filamentSwapState) {
+			s.Phase = phaseError
+			s.Message = err.Error()
+			s.Error = err.Error()
+		})
 		h.writeFilamentServiceError(w, err)
 		return
 	}
-	defer h.returnMqtt()
+	h.svc.Return("mqttqueue")
 
-	currentTemp := mqtt.NozzleTemp()
-	if currentTemp == nil || *currentTemp < (state.LoadTempC-filamentServiceHeatToleranceC) {
-		if sendErr := mqtt.SendGCode(r.Context(), fmt.Sprintf("M104 S%d", state.LoadTempC)); sendErr != nil {
-			h.writeError(w, http.StatusBadGateway, sendErr.Error())
-			return
-		}
-		if _, err := waitForNozzle(mqtt, state.LoadTempC); err != nil {
-			h.writeFilamentServiceError(w, err)
-			return
-		}
-	}
-	if err := mqtt.SendGCode(r.Context(), gcode); err != nil {
-		h.writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
+	go h.runLegacySwapLoad(stateCopy.Token)
 
-	filamentSwapMu.Lock()
-	filamentSwapValue = nil
-	filamentSwapMu.Unlock()
-
-	h.writeJSON(w, http.StatusOK, map[string]any{
+	currentState := swapStateGet(stateCopy.Token)
+	resp := map[string]any{
 		"status": "ok",
-		"message": fmt.Sprintf("Load / purge started for %s at %d\u00b0C.",
-			state.LoadProfileName, state.LoadTempC),
-		"gcode":          gcode,
-		"completed_swap": state,
-		"pending":        false,
-		"swap":           nil,
-	})
+	}
+	if currentState != nil {
+		resp["message"] = currentState.Message
+	}
+	for k, v := range serializeFilamentSwapState(currentState) {
+		resp[k] = v
+	}
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 // FilamentServiceSwapCancel cancels a pending swap.
+// Returns 409 if a swap stage is actively running (phase guard).
 func (h *Handler) FilamentServiceSwapCancel(w http.ResponseWriter, r *http.Request) {
 	payload := h.readJSONPayload(r)
 
@@ -562,16 +954,119 @@ func (h *Handler) FilamentServiceSwapCancel(w http.ResponseWriter, r *http.Reque
 		h.writeError(w, http.StatusConflict, "Swap token mismatch")
 		return
 	}
+	if activePhases[state.Phase] {
+		filamentSwapMu.Unlock()
+		h.writeError(w, http.StatusConflict, "Cannot cancel while an automatic swap stage is running")
+		return
+	}
+	stateCopy := *state
 	filamentSwapValue = nil
 	filamentSwapMu.Unlock()
 
 	h.writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ok",
-		"message":         "Filament swap cancelled.",
-		"cancelled_swap":  state,
-		"pending":         false,
-		"swap":            nil,
+		"status":         "ok",
+		"message":        "Filament swap cancelled.",
+		"cancelled_swap": stateCopy,
+		"pending":        false,
+		"swap":           nil,
 	})
+}
+
+// SettingsFilamentServiceGet returns the filament service settings.
+// GET /api/settings/filament-service — auth-protected.
+func (h *Handler) SettingsFilamentServiceGet(w http.ResponseWriter, _ *http.Request) {
+	cfg, err := h.loadConfig()
+	if err != nil || cfg == nil {
+		h.writeError(w, http.StatusBadRequest, "No printers configured")
+		return
+	}
+	fs := cfg.FilamentService
+	fs.ManualSwapPreheatTempC = model.ClampManualSwapPreheatTempC(fs.ManualSwapPreheatTempC)
+	h.writeJSON(w, http.StatusOK, map[string]any{"filament_service": fs})
+}
+
+// SettingsFilamentServiceUpdate saves filament service settings.
+// POST /api/settings/filament-service — auth-protected.
+//
+// Accepts both:
+//   {"filament_service": {"allow_legacy_swap": false, "manual_swap_preheat_temp_c": 140}}
+// and flat form:
+//   {"allow_legacy_swap": false, "manual_swap_preheat_temp_c": 140}
+func (h *Handler) SettingsFilamentServiceUpdate(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	// Allow either wrapped or flat payload (Python parity).
+	fsPayload := raw
+	if inner, ok := raw["filament_service"]; ok {
+		m, ok := inner.(map[string]any)
+		if !ok {
+			h.writeError(w, http.StatusBadRequest, "Invalid filament_service payload")
+			return
+		}
+		fsPayload = m
+	}
+
+	var updated model.FilamentServiceConfig
+	if err := h.cfg.Modify(func(cfg *model.Config) (*model.Config, error) {
+		if cfg == nil {
+			return cfg, nil
+		}
+		updated = cfg.FilamentService
+		// Apply known fields explicitly for type safety.
+		if v, ok := fsPayload["allow_legacy_swap"]; ok {
+			switch b := v.(type) {
+			case bool:
+				updated.AllowLegacySwap = b
+			case float64:
+				updated.AllowLegacySwap = b != 0
+			}
+		}
+		if v, ok := fsPayload["manual_swap_preheat_temp_c"]; ok {
+			switch n := v.(type) {
+			case float64:
+				updated.ManualSwapPreheatTempC = int(n)
+			case json.Number:
+				if i, err := n.Int64(); err == nil {
+					updated.ManualSwapPreheatTempC = int(i)
+				} else {
+					return nil, &badRequestError{"manual_swap_preheat_temp_c must be an integer"}
+				}
+			default:
+				return nil, &badRequestError{"manual_swap_preheat_temp_c must be an integer"}
+			}
+		}
+		// Always clamp after merging.
+		updated.ManualSwapPreheatTempC = model.ClampManualSwapPreheatTempC(updated.ManualSwapPreheatTempC)
+		cfg.FilamentService = updated
+		return cfg, nil
+	}); err != nil {
+		var br *badRequestError
+		if isBadRequest(err, &br) {
+			h.writeError(w, http.StatusBadRequest, br.msg)
+			return
+		}
+		h.writeError(w, http.StatusInternalServerError, "failed to update filament service settings")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "filament_service": updated})
+}
+
+// badRequestError is a sentinel for validation errors inside cfg.Modify closures.
+type badRequestError struct{ msg string }
+
+func (e *badRequestError) Error() string { return e.msg }
+
+func isBadRequest(err error, out **badRequestError) bool {
+	if br, ok := err.(*badRequestError); ok {
+		*out = br
+		return true
+	}
+	return false
 }
 
 // readJSONPayload is a convenience to parse a JSON body. Returns empty map on failure.
@@ -587,4 +1082,3 @@ func (h *Handler) readJSONPayload(r *http.Request) map[string]any {
 	}
 	return payload
 }
-
