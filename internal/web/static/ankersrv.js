@@ -2615,6 +2615,24 @@ $(function () {
         });
 
         // ------------------------------------------------------------------
+        // UI Debug Controls
+        // ------------------------------------------------------------------
+
+        const testBadgeBtn = document.getElementById("dbg-test-update-badge");
+        const hideBadgeBtn = document.getElementById("dbg-hide-update-badge");
+        if (testBadgeBtn) {
+            testBadgeBtn.addEventListener("click", function () {
+                $("#update-badge-version").text("v99.0.0");
+                $("#update-badge").attr("href", "#").show();
+            });
+        }
+        if (hideBadgeBtn) {
+            hideBadgeBtn.addEventListener("click", function () {
+                $("#update-badge").hide();
+            });
+        }
+
+        // ------------------------------------------------------------------
         // Services Health Dashboard
         // ------------------------------------------------------------------
 
