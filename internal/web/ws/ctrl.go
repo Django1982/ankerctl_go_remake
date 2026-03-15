@@ -192,7 +192,7 @@ func (h *Handler) ctrlReadLoop(ctx context.Context, conn *websocket.Conn, out ch
 			return
 		}
 
-		resp := h.handleCtrlCommand(payload)
+		resp := h.handleCtrlCommand(ctx, payload)
 		if resp == nil {
 			continue
 		}
@@ -203,7 +203,7 @@ func (h *Handler) ctrlReadLoop(ctx context.Context, conn *websocket.Conn, out ch
 	}
 }
 
-func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
+func (h *Handler) handleCtrlCommand(ctx context.Context, payload []byte) map[string]any {
 	if h.services == nil {
 		return map[string]any{"error": "service manager unavailable"}
 	}
@@ -232,7 +232,7 @@ func (h *Handler) handleCtrlCommand(payload []byte) map[string]any {
 		if !ok {
 			return map[string]any{"error": "videoqueue does not support light control"}
 		}
-		if err := ls.SetLight(context.Background(), on); err != nil {
+		if err := ls.SetLight(ctx, on); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
 	}

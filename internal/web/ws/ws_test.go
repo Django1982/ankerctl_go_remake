@@ -519,7 +519,7 @@ func TestCtrlHandleVideoEnabled_DoesNotBorrowService(t *testing.T) {
 	mgr.Register(video)
 
 	h := New(mgr, testState{loggedIn: true, video: true}, nil)
-	resp := h.handleCtrlCommand([]byte(`{"video_enabled":true}`))
+	resp := h.handleCtrlCommand(context.Background(), []byte(`{"video_enabled":true}`))
 	if resp != nil {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
