@@ -6,12 +6,10 @@ $(function () {
 
     /**
      * Version display + update notification.
-     * Fetches /api/ankerctl/version once per session. Shows version in footer
-     * and a dismissible warning banner if a newer release is available.
+     * Fetches /api/ankerctl/version once on load. Shows version in footer
+     * and a permanent green badge in the header when a newer release is available.
      */
     (function () {
-        const DISMISS_KEY = "ankerctl_update_dismissed";
-
         fetch("/api/ankerctl/version")
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (data) {
@@ -22,20 +20,11 @@ $(function () {
                     $("#ankerctl-version").text(data.current);
                 }
 
-                // Update banner — only once per dismissed version
+                // Persistent green badge in the navbar — always visible, never dismissible
                 if (data.update_available && data.latest) {
-                    const dismissed = sessionStorage.getItem(DISMISS_KEY);
-                    if (dismissed === data.latest) return;
-
-                    $("#update-latest-version").text(data.latest);
                     const releaseURL = "https://github.com/Django1982/ankerctl_go_remake/releases/tag/" + encodeURIComponent(data.latest);
-                    $("#update-release-link").attr("href", releaseURL);
-                    $("#update-banner").show();
-
-                    // Persist dismissal for this version for the session
-                    $("#update-banner .btn-close").one("click", function () {
-                        sessionStorage.setItem(DISMISS_KEY, data.latest);
-                    });
+                    $("#update-badge-version").text(data.latest);
+                    $("#update-badge").attr("href", releaseURL).show();
                 }
             })
             .catch(function () { /* silently ignore if endpoint unavailable */ });
