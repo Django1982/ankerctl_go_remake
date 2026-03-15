@@ -99,6 +99,27 @@ type HomeAssistantConfig struct {
 	NodeID          string `json:"node_id"`
 }
 
+// FilamentServiceConfig holds filament service behaviour settings.
+//
+// AllowLegacySwap enables the legacy automatic unload/load swap flow.
+// When false (default), the manual swap flow is used: the printer only preheats
+// the nozzle to ManualSwapPreheatTempC and waits for the user to confirm.
+//
+// ManualSwapPreheatTempC is the preheat temperature used in manual swap mode.
+// It is clamped to [130, 150]°C on read.
+type FilamentServiceConfig struct {
+	AllowLegacySwap        bool `json:"allow_legacy_swap"`
+	ManualSwapPreheatTempC int  `json:"manual_swap_preheat_temp_c"`
+}
+
+// filamentServiceManualSwapMinTempC and filamentServiceManualSwapMaxTempC are the
+// clamp bounds for ManualSwapPreheatTempC.
+const (
+	filamentServiceManualSwapMinTempC = 130
+	filamentServiceManualSwapMaxTempC = 150
+	filamentServiceDefaultPreheatTempC = 140
+)
+
 // DefaultAppriseConfig returns the default Apprise notification configuration.
 func DefaultAppriseConfig() AppriseConfig {
 	return AppriseConfig{
@@ -171,6 +192,35 @@ func DefaultHomeAssistantConfig() HomeAssistantConfig {
 		DiscoveryPrefix: envString("HA_MQTT_DISCOVERY_PREFIX", "homeassistant"),
 		NodeID:          "ankermake_m5",
 	}
+}
+
+// DefaultFilamentServiceConfig returns the default filament service configuration,
+// reading overrides from environment variables.
+func DefaultFilamentServiceConfig() FilamentServiceConfig {
+	raw := envInt("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C", filamentServiceDefaultPreheatTempC)
+	temp := raw
+	if temp < filamentServiceManualSwapMinTempC {
+		temp = filamentServiceManualSwapMinTempC
+	}
+	if temp > filamentServiceManualSwapMaxTempC {
+		temp = filamentServiceManualSwapMaxTempC
+	}
+	return FilamentServiceConfig{
+		AllowLegacySwap:        envBool("FILAMENT_ALLOW_LEGACY_SWAP", false),
+		ManualSwapPreheatTempC: temp,
+	}
+}
+
+// ClampManualSwapPreheatTempC clamps v to [130, 150]°C.
+// Use this whenever a preheat temp is read from config or user input.
+func ClampManualSwapPreheatTempC(v int) int {
+	if v < filamentServiceManualSwapMinTempC {
+		return filamentServiceManualSwapMinTempC
+	}
+	if v > filamentServiceManualSwapMaxTempC {
+		return filamentServiceManualSwapMaxTempC
+	}
+	return v
 }
 
 // defaultCapturesDir returns the default timelapse captures directory.

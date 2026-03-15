@@ -8,13 +8,14 @@ import (
 // Config is the top-level configuration structure.
 // It holds account info, printer list, and feature settings.
 type Config struct {
-	Account            *Account            `json:"-"`
-	Printers           []Printer           `json:"-"`
-	UploadRateMbps     int                 `json:"-"`
-	ActivePrinterIndex int                 `json:"-"`
-	Notifications      NotificationsConfig `json:"-"`
-	Timelapse          TimelapseConfig     `json:"-"`
-	HomeAssistant      HomeAssistantConfig `json:"-"`
+	Account            *Account               `json:"-"`
+	Printers           []Printer              `json:"-"`
+	UploadRateMbps     int                    `json:"-"`
+	ActivePrinterIndex int                    `json:"-"`
+	Notifications      NotificationsConfig    `json:"-"`
+	Timelapse          TimelapseConfig        `json:"-"`
+	HomeAssistant      HomeAssistantConfig    `json:"-"`
+	FilamentService    FilamentServiceConfig  `json:"-"`
 }
 
 // configJSON is the JSON wire format for Config.
@@ -27,6 +28,7 @@ type configJSON struct {
 	Notifications      json.RawMessage `json:"notifications,omitempty"`
 	Timelapse          json.RawMessage `json:"timelapse,omitempty"`
 	HomeAssistant      json.RawMessage `json:"home_assistant,omitempty"`
+	FilamentService    json.RawMessage `json:"filament_service,omitempty"`
 }
 
 // NewConfig creates a Config with default settings.
@@ -39,6 +41,7 @@ func NewConfig(account *Account, printers []Printer) *Config {
 		Notifications:      DefaultNotificationsConfig(),
 		Timelapse:          DefaultTimelapseConfig(),
 		HomeAssistant:      DefaultHomeAssistantConfig(),
+		FilamentService:    DefaultFilamentServiceConfig(),
 	}
 }
 
@@ -87,6 +90,11 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("marshal home_assistant: %w", err)
 	}
 
+	fsData, err := json.Marshal(c.FilamentService)
+	if err != nil {
+		return nil, fmt.Errorf("marshal filament_service: %w", err)
+	}
+
 	return json.Marshal(configJSON{
 		Type:               "Config",
 		Account:            accountData,
@@ -96,6 +104,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		Notifications:      notifData,
 		Timelapse:          timelapseData,
 		HomeAssistant:      haData,
+		FilamentService:    fsData,
 	})
 }
 
@@ -163,6 +172,16 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(raw.HomeAssistant, &c.HomeAssistant); err != nil {
 			c.HomeAssistant = DefaultHomeAssistantConfig()
 		}
+	}
+
+	// Filament service with defaults merge
+	c.FilamentService = DefaultFilamentServiceConfig()
+	if raw.FilamentService != nil && string(raw.FilamentService) != "null" {
+		if err := json.Unmarshal(raw.FilamentService, &c.FilamentService); err != nil {
+			c.FilamentService = DefaultFilamentServiceConfig()
+		}
+		// Always clamp preheat temp after deserialization.
+		c.FilamentService.ManualSwapPreheatTempC = ClampManualSwapPreheatTempC(c.FilamentService.ManualSwapPreheatTempC)
 	}
 
 	return nil

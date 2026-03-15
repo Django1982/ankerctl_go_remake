@@ -209,3 +209,65 @@ func TestDefaultAppriseConfig_Progress_Interval(t *testing.T) {
 		t.Errorf("Progress.IntervalPercent = %d, want 25", cfg.Progress.IntervalPercent)
 	}
 }
+
+func TestDefaultFilamentServiceConfig_PureDefaults(t *testing.T) {
+	os.Unsetenv("FILAMENT_ALLOW_LEGACY_SWAP")
+	os.Unsetenv("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C")
+
+	cfg := DefaultFilamentServiceConfig()
+
+	if cfg.AllowLegacySwap {
+		t.Error("AllowLegacySwap = true by default, want false")
+	}
+	if cfg.ManualSwapPreheatTempC != 140 {
+		t.Errorf("ManualSwapPreheatTempC = %d, want 140", cfg.ManualSwapPreheatTempC)
+	}
+}
+
+func TestDefaultFilamentServiceConfig_EnvOverride(t *testing.T) {
+	os.Setenv("FILAMENT_ALLOW_LEGACY_SWAP", "true")
+	os.Setenv("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C", "145")
+	defer func() {
+		os.Unsetenv("FILAMENT_ALLOW_LEGACY_SWAP")
+		os.Unsetenv("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C")
+	}()
+
+	cfg := DefaultFilamentServiceConfig()
+
+	if !cfg.AllowLegacySwap {
+		t.Error("AllowLegacySwap = false, want true (from env)")
+	}
+	if cfg.ManualSwapPreheatTempC != 145 {
+		t.Errorf("ManualSwapPreheatTempC = %d, want 145", cfg.ManualSwapPreheatTempC)
+	}
+}
+
+func TestClampManualSwapPreheatTempC(t *testing.T) {
+	tests := []struct {
+		input int
+		want  int
+	}{
+		{100, 130}, // below min → min
+		{130, 130}, // at min
+		{140, 140}, // default
+		{150, 150}, // at max
+		{200, 150}, // above max → max
+		{0, 130},   // zero → min
+	}
+	for _, tt := range tests {
+		got := ClampManualSwapPreheatTempC(tt.input)
+		if got != tt.want {
+			t.Errorf("ClampManualSwapPreheatTempC(%d) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestDefaultFilamentServiceConfig_PreheatClampedFromEnv(t *testing.T) {
+	os.Setenv("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C", "200") // above max
+	defer os.Unsetenv("FILAMENT_MANUAL_SWAP_PREHEAT_TEMP_C")
+
+	cfg := DefaultFilamentServiceConfig()
+	if cfg.ManualSwapPreheatTempC != 150 {
+		t.Errorf("ManualSwapPreheatTempC = %d, want 150 (clamped)", cfg.ManualSwapPreheatTempC)
+	}
+}
