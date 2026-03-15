@@ -124,6 +124,13 @@ func (m *ServiceManager) ServicesSnapshot() map[string]Service {
 	return out
 }
 
+// Refs returns the current borrow reference count for a named service.
+func (m *ServiceManager) Refs(name string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.refs[name]
+}
+
 // RefsSnapshot returns a copy of current reference counts.
 func (m *ServiceManager) RefsSnapshot() map[string]int {
 	m.mu.Lock()

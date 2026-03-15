@@ -3,7 +3,6 @@ package ws
 import (
 	"context"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/django1982/ankerctl/internal/service"
@@ -28,7 +27,8 @@ const (
 )
 
 // PPPPState sends PPPP connection status using passive service reads plus a
-// background LAN probe, matching the Python web UI semantics.
+// shared background LAN probe. A single probe goroutine runs at a time across
+// all connected /ws/pppp-state clients (upstream PR #17).
 func (h *Handler) PPPPState(w http.ResponseWriter, r *http.Request) {
 	if h.state == nil || !h.state.IsLoggedIn() || h.state.IsUnsupportedDevice() {
 		h.rejectForbidden(w, "printer not configured")
@@ -43,52 +43,62 @@ func (h *Handler) PPPPState(w http.ResponseWriter, r *http.Request) {
 
 	out := make(chan any, eventBufferSize)
 
-	type ppppStatusSnapshot struct {
-		mu             sync.Mutex
-		lastStatus     string
-		lastKeepalive  time.Time
-		wasConnected   bool
-		lastProbeTime  time.Time
-		probeResult    *bool
-		probeRunning   bool
-		probeFailCount int
-		mqttWasStale   bool
-	}
+	// Register this client; kick off an immediate probe if we are the first.
+	h.ppppProbe.mu.Lock()
+	h.ppppProbe.clientCount++
+	isFirst := h.ppppProbe.clientCount == 1
+	h.ppppProbe.mu.Unlock()
+	defer func() {
+		h.ppppProbe.mu.Lock()
+		h.ppppProbe.clientCount--
+		h.ppppProbe.mu.Unlock()
+	}()
 
-	snapshot := &ppppStatusSnapshot{}
-
+	// startProbe spawns a probe goroutine if none is running and at least one
+	// client is watching. Uses context.Background() so the probe outlives any
+	// individual client's request context.
 	startProbe := func() {
 		prober, ok := h.state.(ppppProbeState)
 		if !ok {
 			return
 		}
-		snapshot.mu.Lock()
-		if snapshot.probeRunning {
-			snapshot.mu.Unlock()
+		h.ppppProbe.mu.Lock()
+		if h.ppppProbe.running || h.ppppProbe.clientCount == 0 {
+			h.ppppProbe.mu.Unlock()
 			return
 		}
-		snapshot.probeRunning = true
-		snapshot.mu.Unlock()
+		h.ppppProbe.running = true
+		h.ppppProbe.mu.Unlock()
 
 		go func() {
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-
 			ok := prober.ProbePPPP(ctx)
-
-			snapshot.mu.Lock()
-			snapshot.probeRunning = false
-			snapshot.lastProbeTime = time.Now()
-			snapshot.probeResult = new(bool)
-			*snapshot.probeResult = ok
+			h.ppppProbe.mu.Lock()
+			h.ppppProbe.running = false
+			h.ppppProbe.lastTime = time.Now()
+			h.ppppProbe.result = new(bool)
+			*h.ppppProbe.result = ok
 			if ok {
-				snapshot.probeFailCount = 0
+				h.ppppProbe.failCount = 0
 			} else {
-				snapshot.probeFailCount++
+				h.ppppProbe.failCount++
 			}
-			snapshot.mu.Unlock()
+			h.ppppProbe.mu.Unlock()
 		}()
 	}
+
+	if isFirst {
+		startProbe()
+	}
+
+	// Per-connection state.
+	var (
+		lastStatus   string
+		lastKeepalive time.Time
+		wasConnected bool // true once we observe "connected"; resets on dormant
+		mqttWasStale bool // tracks previous MQTT stale state to detect recovery
+	)
 
 	emitStatus := func(status string, serviceState service.RunState) {
 		msg := map[string]any{
@@ -100,8 +110,6 @@ func (h *Handler) PPPPState(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
-
-	startProbe()
 
 	pollStatus := func() {
 		now := time.Now()
@@ -130,64 +138,78 @@ func (h *Handler) PPPPState(w http.ResponseWriter, r *http.Request) {
 
 		var shouldProbe bool
 
-		snapshot.mu.Lock()
+		h.ppppProbe.mu.Lock()
 
 		if ppppSvcAvailable && ppppConnected {
 			currentStatus = "connected"
-			snapshot.wasConnected = true
-			snapshot.probeResult = nil
-			snapshot.probeFailCount = 0
+			wasConnected = true
+			// Reset probe state on actual PPPP connection.
+			h.ppppProbe.result = nil
+			h.ppppProbe.failCount = 0
 		} else {
 			mqttStale := !mqttLastMessage.IsZero() && now.Sub(mqttLastMessage) > ppppMQTTStaleAfter
-			mqttRecovered := snapshot.mqttWasStale && !mqttStale
+			mqttRecovered := mqttWasStale && !mqttStale
 			if mqttRecovered {
-				snapshot.probeResult = nil
-				snapshot.probeFailCount = 0
+				// MQTT just came back — reset probe state so we re-probe immediately.
+				h.ppppProbe.result = nil
+				h.ppppProbe.failCount = 0
 			}
-			snapshot.mqttWasStale = mqttStale
+			mqttWasStale = mqttStale
+
+			// Snapshot shared probe values while holding the lock.
+			probeResult := h.ppppProbe.result
+			lastProbeTime := h.ppppProbe.lastTime
+			probeFailCount := h.ppppProbe.failCount
 
 			nextInterval := ppppRetryInterval
-			if snapshot.probeFailCount > ppppMaxRetries {
+			if probeFailCount > ppppMaxRetries {
 				nextInterval = ppppProbeInterval
 			}
-			probeSucceeded := snapshot.probeResult != nil && *snapshot.probeResult
-			probeFailed := snapshot.probeResult != nil && !*snapshot.probeResult
-			shouldProbe = !snapshot.probeRunning &&
-				(snapshot.lastProbeTime.IsZero() ||
-					((mqttStale || mqttRecovered || probeFailed) &&
-						now.Sub(snapshot.lastProbeTime) > nextInterval))
+
+			probeSucceeded := probeResult != nil && *probeResult
+			probeFailed := probeResult != nil && !*probeResult
+
+			// Also probe when PPPP was recently connected but the service
+			// stopped (e.g. last video client disconnected) so the badge
+			// refreshes promptly (upstream PR #19).
+			ppppWentDormant := wasConnected && probeResult == nil
+
+			shouldProbe = !h.ppppProbe.running &&
+				(lastProbeTime.IsZero() ||
+					((mqttStale || mqttRecovered || probeFailed || ppppWentDormant) &&
+						now.Sub(lastProbeTime) > nextInterval))
 
 			switch {
 			case probeSucceeded:
 				currentStatus = "connected"
 			case probeFailed:
 				currentStatus = "disconnected"
-			case ppppSvcAvailable && currentServiceState != service.StateStopped && snapshot.wasConnected:
+			case ppppSvcAvailable && currentServiceState != service.StateStopped && wasConnected:
 				currentStatus = "disconnected"
 			default:
 				currentStatus = "dormant"
 				if !ppppSvcAvailable || currentServiceState == service.StateStopped {
-					snapshot.wasConnected = false
+					wasConnected = false
 				}
 			}
 		}
 
-		if currentStatus != snapshot.lastStatus || (currentStatus == "connected" && now.Sub(snapshot.lastKeepalive) >= ppppKeepaliveEvery) {
-			if snapshot.lastStatus == "" &&
+		if currentStatus != lastStatus || (currentStatus == "connected" && now.Sub(lastKeepalive) >= ppppKeepaliveEvery) {
+			if lastStatus == "" &&
 				currentStatus == "dormant" &&
-				snapshot.probeRunning &&
-				snapshot.probeResult == nil &&
+				h.ppppProbe.running &&
+				h.ppppProbe.result == nil &&
 				!ppppSvcAvailable {
-				snapshot.mu.Unlock()
+				h.ppppProbe.mu.Unlock()
 				return
 			}
-			snapshot.lastStatus = currentStatus
+			lastStatus = currentStatus
 			if currentStatus == "connected" {
-				snapshot.lastKeepalive = now
+				lastKeepalive = now
 			}
 			emitStatus(currentStatus, currentServiceState)
 		}
-		snapshot.mu.Unlock()
+		h.ppppProbe.mu.Unlock()
 		if shouldProbe {
 			startProbe()
 		}

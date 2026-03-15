@@ -258,12 +258,22 @@ func TestMQTTHandler(t *testing.T) {
 func TestVideoHandler(t *testing.T) {
 	mgr := service.NewServiceManager()
 	video := newMockService("videoqueue")
-	video.videoEnabled = true
+	// video.videoEnabled is intentionally NOT set — the handler must enable
+	// video on connect (upstream PR #19 fix).
 	mgr.Register(video)
 
 	h := New(mgr, testState{loggedIn: true, video: true}, nil)
 	conn, cleanup := newWSServer(t, "/ws/video", h.Video)
 	defer cleanup()
+
+	// Allow the handler goroutine to call SetVideoEnabled(true).
+	time.Sleep(30 * time.Millisecond)
+	video.mu.Lock()
+	if len(video.enableCalls) == 0 || !video.enableCalls[len(video.enableCalls)-1] {
+		video.mu.Unlock()
+		t.Fatal("handler did not call SetVideoEnabled(true) on connect")
+	}
+	video.mu.Unlock()
 
 	video.Notify(service.VideoFrameEvent{Frame: []byte{0x00, 0x00, 0x00, 0x01}})
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -276,6 +286,74 @@ func TestVideoHandler(t *testing.T) {
 	}
 	if len(payload) != 4 {
 		t.Fatalf("unexpected frame length=%d", len(payload))
+	}
+}
+
+func TestVideoHandlerDisablesOnLastDisconnect(t *testing.T) {
+	mgr := service.NewServiceManager()
+	video := newMockService("videoqueue")
+	mgr.Register(video)
+
+	h := New(mgr, testState{loggedIn: true, video: true}, nil)
+	_, cleanup := newWSServer(t, "/ws/video", h.Video)
+
+	// Wait for connect + SetVideoEnabled(true).
+	time.Sleep(30 * time.Millisecond)
+
+	// Disconnect the last (only) client.
+	cleanup()
+
+	// Allow the defer in the handler to run.
+	time.Sleep(50 * time.Millisecond)
+	video.mu.Lock()
+	calls := make([]bool, len(video.enableCalls))
+	copy(calls, video.enableCalls)
+	video.mu.Unlock()
+
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 enableCalls (true then false), got %v", calls)
+	}
+	if calls[len(calls)-1] {
+		t.Fatalf("expected last enableCall to be false (disable on disconnect), got %v", calls)
+	}
+}
+
+func TestPPPPStateSharedProbe(t *testing.T) {
+	probeCount := 0
+	h := New(nil, testState{
+		loggedIn: true,
+		video:    true,
+		probePPPP: func(context.Context) bool {
+			probeCount++
+			return true
+		},
+	}, nil)
+
+	// Two clients connect simultaneously.
+	conn1, cleanup1 := newWSServer(t, "/ws/pppp-state", h.PPPPState)
+	defer cleanup1()
+	conn2, cleanup2 := newWSServer(t, "/ws/pppp-state", h.PPPPState)
+	defer cleanup2()
+
+	// Both should receive a "connected" status.
+	for _, conn := range []*websocket.Conn{conn1, conn2} {
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read message: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(payload, &got); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if got["status"] != "connected" {
+			t.Fatalf("status=%v want=connected", got["status"])
+		}
+	}
+
+	// Only one probe goroutine should have run (shared across both clients).
+	if probeCount > 1 {
+		t.Fatalf("shared probe ran %d times, want 1 (one goroutine for all clients)", probeCount)
 	}
 }
 

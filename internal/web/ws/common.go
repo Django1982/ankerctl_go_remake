@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/django1982/ankerctl/internal/service"
@@ -28,13 +29,26 @@ type videoState interface {
 	VideoSupported() bool
 }
 
+// ppppSharedProbe holds PPPP probe state shared across all /ws/pppp-state
+// clients. This ensures at most one probe goroutine runs at a time regardless
+// of how many browser tabs are open simultaneously (upstream PR #17).
+type ppppSharedProbe struct {
+	mu          sync.Mutex
+	result      *bool     // nil = never probed or reset after connect
+	lastTime    time.Time // when the last probe completed
+	failCount   int       // consecutive failures since last success
+	running     bool      // probe goroutine is active
+	clientCount int       // active /ws/pppp-state connections
+}
+
 // Handler serves websocket endpoints backed by services.
 type Handler struct {
-	services *service.ServiceManager
-	state    state
-	vstate   videoState
-	log      *slog.Logger
-	upgrader websocket.Upgrader
+	services  *service.ServiceManager
+	state     state
+	vstate    videoState
+	log       *slog.Logger
+	upgrader  websocket.Upgrader
+	ppppProbe *ppppSharedProbe
 }
 
 // New builds websocket handlers for route registration.
@@ -43,12 +57,11 @@ func New(services *service.ServiceManager, st state, logger *slog.Logger) *Handl
 		logger = slog.Default()
 	}
 	h := &Handler{
-		services: services,
-		state:    st,
-		log:      logger.With("component", "ws"),
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(_ *http.Request) bool { return true },
-		},
+		services:  services,
+		state:     st,
+		log:       logger.With("component", "ws"),
+		upgrader:  websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }},
+		ppppProbe: &ppppSharedProbe{},
 	}
 	if vs, ok := st.(videoState); ok {
 		h.vstate = vs
