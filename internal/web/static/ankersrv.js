@@ -2623,7 +2623,7 @@ $(function () {
         if (testBadgeBtn) {
             testBadgeBtn.addEventListener("click", function () {
                 $("#update-badge-version").text("v99.0.0");
-                $("#update-badge").attr("href", "#").show();
+                $("#update-badge").attr("href", "https://github.com/Django1982/ankerctl_go_remake/releases").show();
             });
         }
         if (hideBadgeBtn) {
