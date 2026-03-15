@@ -53,7 +53,39 @@
                             <div class="col-lg-6">
                                 <div class="border rounded-3 p-3 h-100">
                                     <div class="fw-semibold mb-2">Swap Filament</div>
+                                    <div class="alert alert-warning py-2 small mb-3">
+                                        Recommended method: preheat the nozzle to 130-150&deg;C, release the extruder lever,
+                                        and pull the filament manually to reduce the risk of debris or melted filament
+                                        sticking to the drive gear.
+                                    </div>
                                     <div class="row g-3">
+                                        <div class="col-12">
+                                            <div class="border rounded-3 p-3 bg-light-subtle">
+                                                <div class="fw-semibold mb-2">Swap Safety</div>
+                                                <div class="row g-3 align-items-end">
+                                                    <div class="col-sm-6">
+                                                        <label for="filament-manual-swap-temp" class="form-label">Manual Swap Preheat (&deg;C)</label>
+                                                        <input type="number" class="form-control" id="filament-manual-swap-temp" min="130" max="150" step="1" value="140">
+                                                        <div class="form-text">Used by the recommended guided swap flow.</div>
+                                                    </div>
+                                                    <div class="col-sm-6">
+                                                        <div class="form-check mt-sm-4 pt-sm-2">
+                                                            <input class="form-check-input" type="checkbox" id="filament-allow-legacy-swap">
+                                                            <label class="form-check-label" for="filament-allow-legacy-swap">
+                                                                Enable legacy automatic unload / purge
+                                                            </label>
+                                                        </div>
+                                                        <div class="form-text">Only enable this if you explicitly want the old automated swap behavior.</div>
+                                                    </div>
+                                                    <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+                                                        <button class="btn btn-outline-secondary btn-sm" id="filament-save-swap-settings-btn">
+                                                            <i class="bi bi-save"></i> Save Swap Settings
+                                                        </button>
+                                                        <div id="filament-swap-settings-status" class="text-muted small"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
                                         <div class="col-sm-6">
                                             <label for="filament-swap-unload-profile" class="form-label">Unload Profile</label>
                                             <select class="form-select" id="filament-swap-unload-profile">
