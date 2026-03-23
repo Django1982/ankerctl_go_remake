@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/django1982/ankerctl/internal/model"
@@ -51,6 +52,12 @@ func (h *Handler) PrintersSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.Index < 0 || payload.Index >= len(cfg.Printers) {
 		h.writeError(w, http.StatusBadRequest, "Printer index out of range")
+		return
+	}
+
+	targetModel := cfg.Printers[payload.Index].Model
+	if !model.IsPrinterSupported(targetModel) {
+		h.writeError(w, http.StatusForbidden, fmt.Sprintf("Device %s is not supported by ankerctl", targetModel))
 		return
 	}
 
