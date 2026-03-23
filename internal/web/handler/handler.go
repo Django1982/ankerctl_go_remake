@@ -96,19 +96,20 @@ type UnsupportedDeviceChecker interface {
 
 // Handler bundles shared dependencies used by HTTP handlers.
 type Handler struct {
-	cfg               *config.Manager
-	db                *db.DB
-	svc               *service.ServiceManager
-	log               *slog.Logger
-	devMode           bool
-	render            RenderFunc
-	stateReloader     StateReloader
-	videoChecker      VideoSupportChecker
+	cfg                *config.Manager
+	db                 *db.DB
+	svc                *service.ServiceManager
+	log                *slog.Logger
+	devMode            bool
+	render             RenderFunc
+	stateReloader      StateReloader
+	videoChecker       VideoSupportChecker
 	unsupportedChecker UnsupportedDeviceChecker
-	logRing           *logging.RingBuffer
-	logDir            string // resolved once at startup; empty means no disk log dir available
-	version           string
-	releases          *releaseCache
+	logRing            *logging.RingBuffer
+	logDir             string // resolved once at startup; empty means no disk log dir available
+	version            string
+	releases           *releaseCache
+	shutdownTrigger    ShutdownTrigger
 }
 
 // New creates a handler bundle.
@@ -146,6 +147,12 @@ func (h *Handler) WithLogRing(ring *logging.RingBuffer) {
 // Resolved once at startup: set to empty string if no directory is available.
 func (h *Handler) WithLogDir(dir string) {
 	h.logDir = dir
+}
+
+// WithShutdownTrigger sets the ShutdownTrigger used by ServerShutdown to
+// initiate a graceful process shutdown via the API.
+func (h *Handler) WithShutdownTrigger(t ShutdownTrigger) {
+	h.shutdownTrigger = t
 }
 
 // ResolveLogDir determines the log directory once at startup.

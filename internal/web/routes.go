@@ -18,6 +18,7 @@ func (s *Server) registerRoutes() {
 	h.WithStateReloader(s)
 	h.WithVideoChecker(s)
 	h.WithUnsupportedChecker(s)
+	h.WithShutdownTrigger(s)
 	if s.logRing != nil {
 		h.WithLogRing(s.logRing)
 	}
@@ -47,6 +48,7 @@ func (s *Server) registerRoutes() {
 	r.Post("/api/ankerctl/config/login", h.ConfigLogin)
 	r.Post("/api/ankerctl/config/logout", h.ConfigLogout)
 	r.Get("/api/ankerctl/server/reload", h.ServerReload)
+	r.Post("/api/ankerctl/server/shutdown", h.ServerShutdown)
 	r.Post("/api/ankerctl/config/upload-rate", h.UploadRateUpdate)
 
 	// Printer / selector

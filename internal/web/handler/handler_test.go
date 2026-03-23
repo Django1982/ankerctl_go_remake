@@ -8,11 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/django1982/ankerctl/internal/config"
 	"github.com/django1982/ankerctl/internal/db"
 	"github.com/go-chi/chi/v5"
 )
+
+// shutdownTriggerFunc is a function adapter that satisfies ShutdownTrigger.
+type shutdownTriggerFunc func()
+
+func (f shutdownTriggerFunc) TriggerShutdown() { f() }
 
 func TestProfileCountryCode(t *testing.T) {
 	got := profileCountryCode(map[string]any{
@@ -174,6 +180,72 @@ func TestDebugSimulateBadJSON(t *testing.T) {
 	h.DebugSimulate(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("DebugSimulate: status=%d want=%d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// mockShutdownTrigger records whether TriggerShutdown was called.
+type mockShutdownTrigger struct {
+	called bool
+}
+
+func (m *mockShutdownTrigger) TriggerShutdown() {
+	m.called = true
+}
+
+func TestServerShutdown_Returns200WithMessage(t *testing.T) {
+	h := newTestHandler(t)
+	trigger := &mockShutdownTrigger{}
+	h.WithShutdownTrigger(trigger)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/ankerctl/server/shutdown", nil)
+	w := httptest.NewRecorder()
+	h.ServerShutdown(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("ServerShutdown: status=%d want=%d", w.Code, http.StatusOK)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if payload["message"] == "" {
+		t.Fatalf("ServerShutdown: missing 'message' field in response: %#v", payload)
+	}
+}
+
+func TestServerShutdown_TriggersCalled(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Use a channel so the test can block until TriggerShutdown is called
+	// by the goroutine spawned inside ServerShutdown.
+	called := make(chan struct{})
+	h.WithShutdownTrigger(shutdownTriggerFunc(func() {
+		close(called)
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/api/ankerctl/server/shutdown", nil)
+	w := httptest.NewRecorder()
+	h.ServerShutdown(w, r)
+
+	select {
+	case <-called:
+		// TriggerShutdown was invoked as expected.
+	case <-time.After(200 * time.Millisecond):
+		t.Error("TriggerShutdown was not called within 200ms deadline")
+	}
+}
+
+func TestServerShutdown_NoTrigger_DoesNotPanic(t *testing.T) {
+	// When no ShutdownTrigger is set, ServerShutdown must still respond 200.
+	h := newTestHandler(t)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/ankerctl/server/shutdown", nil)
+	w := httptest.NewRecorder()
+	h.ServerShutdown(w, r) // must not panic
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("ServerShutdown (no trigger): status=%d want=%d", w.Code, http.StatusOK)
 	}
 }
 

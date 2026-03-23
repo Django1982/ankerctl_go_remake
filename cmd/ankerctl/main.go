@@ -240,6 +240,12 @@ func runWebserver() error {
 		// Wait a bit for server to stop
 		time.Sleep(500 * time.Millisecond)
 		return nil
+	case <-srv.ShutdownCh():
+		logger.Info("shutdown requested via API — shutting down...")
+		stop() // cancel the signal context so the HTTP server also stops
+		sm.Shutdown()
+		time.Sleep(500 * time.Millisecond)
+		return nil
 	case err := <-errCh:
 		return err
 	}

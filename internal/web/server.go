@@ -78,6 +78,10 @@ type Server struct {
 	devModeSet bool
 
 	appVersion string
+
+	// shutdownCh is closed when an API-triggered graceful shutdown is requested.
+	shutdownCh chan struct{}
+	shutdownOnce sync.Once
 }
 
 // WithAppVersion injects the build-time version string.
@@ -146,15 +150,31 @@ func WithInsecure(insecure bool) Option {
 // NewServer creates a new phase-4 server.
 func NewServer(cfg *config.Manager, opts ...Option) *Server {
 	s := &Server{
-		config: cfg,
-		logger: slog.With("component", "web"),
-		host:   DefaultHost,
-		port:   DefaultPort,
+		config:     cfg,
+		logger:     slog.With("component", "web"),
+		host:       DefaultHost,
+		port:       DefaultPort,
+		shutdownCh: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// ShutdownCh returns a channel that is closed when an API-triggered graceful
+// shutdown has been requested. The caller (main.go) should select on this
+// channel in addition to the OS signal context.
+func (s *Server) ShutdownCh() <-chan struct{} {
+	return s.shutdownCh
+}
+
+// TriggerShutdown signals a graceful shutdown via the API. It is idempotent
+// and safe to call from multiple goroutines.
+func (s *Server) TriggerShutdown() {
+	s.shutdownOnce.Do(func() {
+		close(s.shutdownCh)
+	})
 }
 
 // WithDatabase injects the persistence layer used by web handlers.
