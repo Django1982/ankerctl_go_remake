@@ -2633,6 +2633,17 @@ $(function () {
         }
 
         // ------------------------------------------------------------------
+        // Server Shutdown (debug controls button)
+        // ------------------------------------------------------------------
+
+        const serverShutdownBtn = document.getElementById("dbg-server-shutdown");
+        if (serverShutdownBtn) {
+            serverShutdownBtn.addEventListener("click", function () {
+                triggerServerShutdown();
+            });
+        }
+
+        // ------------------------------------------------------------------
         // Services Health Dashboard
         // ------------------------------------------------------------------
 
@@ -3704,6 +3715,54 @@ $(function () {
                 alert("Failed to switch printer: " + err);
             });
         });
+    });
+
+    // ------------------------------------------------------------------
+    // Graceful server shutdown
+    // ------------------------------------------------------------------
+
+    /**
+     * Sends POST /api/ankerctl/server/shutdown and shows a status message.
+     * Authentication is handled transparently by the browser session cookie
+     * (set when the user authenticated with their API key via ?apikey=...).
+     */
+    function triggerServerShutdown() {
+        if (!confirm("Shut down the ankerctl server process?")) {
+            return;
+        }
+        fetch("/api/ankerctl/server/shutdown", { method: "POST" })
+            .then(function (resp) {
+                if (resp.ok) {
+                    flash_message("Server is shutting down...", "warning", 10000);
+                } else {
+                    resp.json().then(function (data) {
+                        flash_message("Shutdown failed: " + (data.error || resp.statusText), "danger");
+                    }).catch(function () {
+                        flash_message("Shutdown failed: HTTP " + resp.status, "danger");
+                    });
+                }
+            })
+            .catch(function (err) {
+                // A network error here is expected — the server may have closed the
+                // connection before the browser received the full response.
+                flash_message("Server is shutting down...", "warning", 10000);
+            });
+    }
+
+    /**
+     * Keyboard shortcut: Ctrl+Shift+Q triggers graceful server shutdown.
+     * Only active when the debug tab is available (DebugMode=true).
+     */
+    document.addEventListener("keydown", function (e) {
+        if (e.ctrlKey && e.shiftKey && e.key === "Q") {
+            // Ignore when focus is inside a text input to avoid accidental triggers.
+            var tag = document.activeElement ? document.activeElement.tagName.toUpperCase() : "";
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+                return;
+            }
+            e.preventDefault();
+            triggerServerShutdown();
+        }
     });
 
 });
