@@ -3754,6 +3754,7 @@ $(function () {
      * Only active when the debug tab is available (DebugMode=true).
      */
     document.addEventListener("keydown", function (e) {
+        if (!document.getElementById("dbg-server-shutdown")) return;
         if (e.ctrlKey && e.shiftKey && e.key === "Q") {
             // Ignore when focus is inside a text input to avoid accidental triggers.
             var tag = document.activeElement ? document.activeElement.tagName.toUpperCase() : "";
