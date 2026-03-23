@@ -10,6 +10,7 @@ var printerControlPrefixes = []string{
 	"/api/printer/",
 	"/api/files/",
 	"/api/filaments",
+	"/ws/",
 }
 
 // DeviceState provides server runtime state required for device checks.
