@@ -57,7 +57,7 @@ func (h *Handler) PrintersSwitch(w http.ResponseWriter, r *http.Request) {
 
 	targetModel := cfg.Printers[payload.Index].Model
 	if !model.IsPrinterSupported(targetModel) {
-		h.writeError(w, http.StatusForbidden, fmt.Sprintf("Device %s is not supported by ankerctl", targetModel))
+		h.writeError(w, http.StatusForbidden, fmt.Sprintf("Device %q is not supported by ankerctl", targetModel))
 		return
 	}
 
