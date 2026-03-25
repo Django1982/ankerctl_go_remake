@@ -215,20 +215,15 @@ func (h *Handler) Video(w http.ResponseWriter, r *http.Request) {
 
 	frameCh := make(chan []byte, 64)
 	unsub := vq.Tap(func(v any) {
-		switch msg := v.(type) {
-		case service.VideoFrameEvent:
-			frame := append([]byte(nil), msg.Frame...)
-			select {
-			case frameCh <- frame:
-			default:
-				// Drop when HTTP writer can't keep up.
-			}
-		case []byte:
-			frame := append([]byte(nil), msg...)
-			select {
-			case frameCh <- frame:
-			default:
-			}
+		msg, ok := v.(service.VideoFrameEvent)
+		if !ok {
+			return
+		}
+		frame := append([]byte(nil), msg.Frame...)
+		select {
+		case frameCh <- frame:
+		default:
+			// Drop when HTTP writer can't keep up.
 		}
 	})
 	defer unsub()
