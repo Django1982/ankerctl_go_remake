@@ -54,6 +54,31 @@ type SnapshotLightController interface {
 	SetLight(ctx context.Context, on bool) error
 }
 
+// PPPPLifecycleController provides PPPP service lifecycle access needed by
+// VideoQueue to ensure the PPPP connection is established before issuing live
+// commands. Implemented by PPPPService.
+type PPPPLifecycleController interface {
+	// Start requests the PPPP service to start. Safe to call when already running.
+	Start(ctx context.Context)
+	// IsConnected reports whether the PPPP handshake has completed.
+	IsConnected() bool
+	// State returns the current worker run-state.
+	State() RunState
+}
+
+// PPPPVideoRegistrar allows VideoQueue to register a frame handler directly
+// with the PPPP service. Implemented by PPPPService.
+type PPPPVideoRegistrar interface {
+	RegisterVideoHandler(fn func(protocol.VideoFrame))
+}
+
+// Compile-time assertion: PPPPService must satisfy both PPPP lifecycle interfaces.
+// This is placed here (alongside the interfaces) so any breakage is caught at build time.
+var (
+	_ PPPPLifecycleController = (*PPPPService)(nil)
+	_ PPPPVideoRegistrar      = (*PPPPService)(nil)
+)
+
 // VideoFrameEvent is emitted for each incoming H.264 frame.
 type VideoFrameEvent struct {
 	Generation uint64
@@ -95,6 +120,8 @@ type VideoQueue struct {
 
 	controller      VideoStreamController
 	lightController SnapshotLightController
+	ppppLifecycle   PPPPLifecycleController
+	ppppRegistrar   PPPPVideoRegistrar
 	runFFmpeg       ffmpegRunner
 
 	VideoEnabledField bool
@@ -113,6 +140,10 @@ type VideoQueue struct {
 }
 
 // NewVideoQueue creates a VideoQueue service.
+//
+// If controller additionally implements [PPPPLifecycleController] and/or
+// [PPPPVideoRegistrar], those capabilities are extracted and stored in typed
+// fields, eliminating the need for runtime type assertions in WorkerStart.
 func NewVideoQueue(controller VideoStreamController, light SnapshotLightController) *VideoQueue {
 	q := &VideoQueue{
 		BaseWorker:        NewBaseWorker("videoqueue"),
@@ -124,6 +155,14 @@ func NewVideoQueue(controller VideoStreamController, light SnapshotLightControll
 		stallTimeout:      defaultVideoStallTimeout,
 		checkInterval:     time.Second,
 		VideoEnabledField: false,
+	}
+	// Eagerly extract typed PPPP interfaces so WorkerStart can use them
+	// directly without inline type assertions.
+	if lc, ok := controller.(PPPPLifecycleController); ok {
+		q.ppppLifecycle = lc
+	}
+	if reg, ok := controller.(PPPPVideoRegistrar); ok {
+		q.ppppRegistrar = reg
 	}
 	q.BindHooks(q)
 	return q
@@ -313,36 +352,40 @@ func (q *VideoQueue) WorkerStart() error {
 	enabled := q.VideoEnabledField
 	profile := VideoProfiles[q.profileID]
 	controller := q.controller
+	ppppLC := q.ppppLifecycle
+	ppppReg := q.ppppRegistrar
 	q.mu.RUnlock()
 	if !enabled || controller == nil {
 		return nil
 	}
 
-	// Ensure PPPP service is started and connected before issuing live/video commands.
-	type ppppLifecycle interface {
-		Start(context.Context)
-		IsConnected() bool
-		State() RunState
-	}
-	if lc, ok := controller.(ppppLifecycle); ok {
-		lc.Start(context.Background())
+	// Ensure PPPP service is started and connected before issuing live/video
+	// commands. Uses the typed ppppLifecycle field populated at construction
+	// time instead of an inline type assertion.
+	if ppppLC != nil {
+		ctx := q.LoopContext()
+		ppppLC.Start(ctx)
 		deadline := time.Now().Add(6 * time.Second)
-		for !lc.IsConnected() && time.Now().Before(deadline) {
-			if lc.State() == StateStopped {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for !ppppLC.IsConnected() {
+			if time.Now().After(deadline) {
+				return errors.New("videoqueue: ppppservice connection timeout")
+			}
+			if ppppLC.State() == StateStopped {
 				return errors.New("videoqueue: ppppservice stopped during startup")
 			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		if !lc.IsConnected() {
-			return errors.New("videoqueue: ppppservice connection timeout")
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("videoqueue: context cancelled waiting for pppp: %w", ctx.Err())
+			case <-ticker.C:
+				// re-check loop condition on next iteration
+			}
 		}
 	}
 
-	type videoHandlerRegistrar interface {
-		RegisterVideoHandler(func(protocol.VideoFrame))
-	}
-	if reg, ok := controller.(videoHandlerRegistrar); ok {
-		reg.RegisterVideoHandler(func(vf protocol.VideoFrame) {
+	if ppppReg != nil {
+		ppppReg.RegisterVideoHandler(func(vf protocol.VideoFrame) {
 			if vf.Cmd == protocol.P2PCmdVideoFrame {
 				q.FeedFrame(vf.Data)
 			}
