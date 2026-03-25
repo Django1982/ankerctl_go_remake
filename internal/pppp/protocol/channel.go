@@ -20,100 +20,124 @@ type txItem struct {
 }
 
 // Wire is an in-memory byte stream used by logical PPPP channels.
+// Readers wait via a channel-based notification mechanism that supports
+// context cancellation, avoiding the mutex contention of sync.Cond+timer.
 type Wire struct {
-	mu  sync.Mutex
-	cv  *sync.Cond
-	buf []byte
+	mu       sync.Mutex
+	notifyCh chan struct{}
+	buf      []byte
 }
 
 // NewWire allocates a new wire.
 func NewWire() *Wire {
-	w := &Wire{}
-	w.cv = sync.NewCond(&w.mu)
-	return w
+	return &Wire{
+		notifyCh: make(chan struct{}, 1),
+	}
 }
 
 // Write appends bytes and notifies waiting readers.
 func (w *Wire) Write(data []byte) {
 	w.mu.Lock()
 	w.buf = append(w.buf, data...)
-	w.cv.Broadcast()
 	w.mu.Unlock()
+	// Non-blocking send to wake one waiter.
+	select {
+	case w.notifyCh <- struct{}{}:
+	default:
+	}
 }
 
-// Peek returns the next size bytes without consuming.
-func (w *Wire) Peek(size int, timeout time.Duration) []byte {
+// PeekContext returns the next size bytes without consuming them.
+// It blocks until enough data is available, the context is cancelled,
+// or the timeout elapses.
+func (w *Wire) PeekContext(ctx context.Context, size int, timeout time.Duration) ([]byte, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if timeout == 0 {
-		if len(w.buf) < size {
-			return nil
-		}
+	if len(w.buf) >= size {
 		out := make([]byte, size)
 		copy(out, w.buf[:size])
-		return out
+		w.mu.Unlock()
+		return out, nil
+	}
+	w.mu.Unlock()
+
+	if timeout == 0 {
+		return nil, nil
 	}
 
-	deadline := time.Now().Add(timeout)
-	for len(w.buf) < size {
-		if timeout > 0 {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				return nil
-			}
-			timer := time.AfterFunc(remaining, func() {
-				w.mu.Lock()
-				w.cv.Broadcast()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, nil
+		case <-w.notifyCh:
+			w.mu.Lock()
+			if len(w.buf) >= size {
+				out := make([]byte, size)
+				copy(out, w.buf[:size])
 				w.mu.Unlock()
-			})
-			w.cv.Wait()
-			timer.Stop()
-		} else {
-			w.cv.Wait()
+				return out, nil
+			}
+			w.mu.Unlock()
 		}
 	}
+}
 
-	out := make([]byte, size)
-	copy(out, w.buf[:size])
+// ReadContext returns and consumes the next size bytes.
+// It blocks until enough data is available, the context is cancelled,
+// or the timeout elapses.
+func (w *Wire) ReadContext(ctx context.Context, size int, timeout time.Duration) ([]byte, error) {
+	w.mu.Lock()
+	if len(w.buf) >= size {
+		out := make([]byte, size)
+		copy(out, w.buf[:size])
+		w.buf = w.buf[size:]
+		w.mu.Unlock()
+		return out, nil
+	}
+	w.mu.Unlock()
+
+	if timeout == 0 {
+		return nil, nil
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, nil
+		case <-w.notifyCh:
+			w.mu.Lock()
+			if len(w.buf) >= size {
+				out := make([]byte, size)
+				copy(out, w.buf[:size])
+				w.buf = w.buf[size:]
+				w.mu.Unlock()
+				return out, nil
+			}
+			w.mu.Unlock()
+		}
+	}
+}
+
+// Peek returns the next size bytes without consuming them.
+// It delegates to PeekContext with context.Background() for backward compatibility.
+func (w *Wire) Peek(size int, timeout time.Duration) []byte {
+	out, _ := w.PeekContext(context.Background(), size, timeout)
 	return out
 }
 
 // Read returns and consumes the next size bytes.
-// It holds the lock for both the availability check and the consume to avoid
-// a race between Peek and the slice truncation.
+// It delegates to ReadContext with context.Background() for backward compatibility.
 func (w *Wire) Read(size int, timeout time.Duration) []byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if timeout == 0 {
-		if len(w.buf) < size {
-			return nil
-		}
-		out := make([]byte, size)
-		copy(out, w.buf[:size])
-		w.buf = w.buf[size:]
-		return out
-	}
-
-	deadline := time.Now().Add(timeout)
-	for len(w.buf) < size {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil
-		}
-		timer := time.AfterFunc(remaining, func() {
-			w.mu.Lock()
-			w.cv.Broadcast()
-			w.mu.Unlock()
-		})
-		w.cv.Wait()
-		timer.Stop()
-	}
-
-	out := make([]byte, size)
-	copy(out, w.buf[:size])
-	w.buf = w.buf[size:]
+	out, _ := w.ReadContext(context.Background(), size, timeout)
 	return out
 }
 
