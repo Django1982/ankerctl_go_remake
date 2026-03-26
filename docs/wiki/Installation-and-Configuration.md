@@ -113,7 +113,7 @@ You will be prompted for email and password. Replace `DE` with your country code
 API key authentication protects all write operations (uploading files, sending G-code, controlling the printer). Read operations (status, video stream) remain public.
 
 ```sh
-# Generate a random key
+# Generate a random key (printed to stdout — save it!)
 ./ankerctl config set-password
 
 # Set a specific key (minimum 16 characters, [a-zA-Z0-9_-])
@@ -122,6 +122,8 @@ API key authentication protects all write operations (uploading files, sending G
 # Remove key (disable authentication)
 ./ankerctl config remove-password
 ```
+
+> **Note:** When running `set-password` without an argument, a random key is generated and **printed once to stdout**. Copy it immediately — it is not shown again.
 
 For Docker, set `ANKERCTL_API_KEY` in your `.env` file.
 
