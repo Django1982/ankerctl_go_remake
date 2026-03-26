@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -110,6 +112,10 @@ type Handler struct {
 	version            string
 	releases           *releaseCache
 	shutdownTrigger    ShutdownTrigger
+
+	// lanDiscoveryFunc overrides ppppclient.DiscoverLANIP for testing.
+	// If nil, the real ppppclient.DiscoverLANIP is used.
+	lanDiscoveryFunc func(ctx context.Context, duid string) (net.IP, error)
 }
 
 // New creates a handler bundle.

@@ -498,7 +498,11 @@ func (h *Handler) discoverAndPersistPrinterIPs(printers []model.Printer) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			defer cancel()
-			ip, err := ppppclient.DiscoverLANIP(ctx, p.P2PDUID)
+			discover := ppppclient.DiscoverLANIP
+			if h.lanDiscoveryFunc != nil {
+				discover = h.lanDiscoveryFunc
+			}
+			ip, err := discover(ctx, p.P2PDUID)
 			if err != nil {
 				slog.Warn("background IP discovery failed", "duid", logging.RedactID(p.P2PDUID, 4), "error", err)
 				return
