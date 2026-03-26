@@ -167,7 +167,7 @@ func TestPPPPService_Upload(t *testing.T) {
 			}
 
 			progressMu.Lock()
-			if tt.payload != nil && len(tt.payload) > 0 {
+			if len(tt.payload) > 0 {
 				if lastTotal != int64(len(tt.payload)) {
 					t.Errorf("progress total = %d, want %d", lastTotal, len(tt.payload))
 				}
