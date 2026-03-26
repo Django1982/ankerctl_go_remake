@@ -108,7 +108,7 @@ func configShow(cfg *model.Config) string {
 		"  upload_rate_mbps: %s\n\n",
 		redact(a.UserID),
 		redact(a.AuthToken),
-		a.Email,
+		redact(a.Email),
 		strings.ToUpper(a.Region),
 		country,
 		uploadRate,
