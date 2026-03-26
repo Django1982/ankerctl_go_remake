@@ -20,7 +20,9 @@ func parseBoolHTTP(v string) bool {
 
 // SlicerUpload handles OctoPrint-compatible multipart file uploads.
 func (h *Handler) SlicerUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 2048<<20) // Limit to 2048 MB (matches UPLOAD_MAX_MB default)
+	if h.uploadMaxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, h.uploadMaxBytes)
+	}
 
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid multipart form")

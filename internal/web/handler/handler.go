@@ -112,6 +112,7 @@ type Handler struct {
 	version            string
 	releases           *releaseCache
 	shutdownTrigger    ShutdownTrigger
+	uploadMaxBytes     int64
 
 	// lanDiscoveryFunc overrides ppppclient.DiscoverLANIP for testing.
 	// If nil, the real ppppclient.DiscoverLANIP is used.
@@ -159,6 +160,10 @@ func (h *Handler) WithLogDir(dir string) {
 // initiate a graceful process shutdown via the API.
 func (h *Handler) WithShutdownTrigger(t ShutdownTrigger) {
 	h.shutdownTrigger = t
+}
+
+func (h *Handler) WithUploadMaxBytes(n int64) {
+	h.uploadMaxBytes = n
 }
 
 // ResolveLogDir determines the log directory once at startup.
