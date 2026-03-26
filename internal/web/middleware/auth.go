@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"net/url"
@@ -106,8 +107,10 @@ func stripAPIKeyParam(u *url.URL) string {
 }
 
 func secureEquals(a, b string) bool {
-	// Do NOT short-circuit on length difference — that leaks the key length
-	// via timing. subtle.ConstantTimeCompare already returns 0 when lengths
-	// differ, in constant time.
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+	// Hash both strings with SHA-256 to ensure they have the same length (32 bytes).
+	// This prevents subtle.ConstantTimeCompare from leaking the length of the string via timing,
+	// because it returns immediately if lengths differ.
+	hashA := sha256.Sum256([]byte(a))
+	hashB := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(hashA[:], hashB[:]) == 1
 }

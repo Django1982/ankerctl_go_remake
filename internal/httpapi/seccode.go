@@ -2,10 +2,11 @@ package httpapi
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"strings"
 )
 
@@ -104,7 +105,11 @@ func max(a, b byte) byte {
 // GenRandSeed generates a random seed and sec_code for the v2 protocol.
 // Python: gen_rand_seed(mac) -> (sec_ts, sec_code)
 func GenRandSeed(mac string) (secTS string, secCode string) {
-	rnd := rand.Intn(90000000) + 10000000
+	n, err := rand.Int(rand.Reader, big.NewInt(90000000))
+	rnd := 10000000
+	if err == nil {
+		rnd += int(n.Int64())
+	}
 
 	suffix := CalHwIDSuffix(mac)
 	txtBuf := fmt.Sprintf("%d%d", 1000-suffix, rnd)

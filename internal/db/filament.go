@@ -8,6 +8,44 @@ import (
 	"strings"
 )
 
+// buildInsertQuery creates an INSERT statement and arguments for the given fields.
+func buildInsertQuery(fields map[string]any) (string, []any) {
+	cols := make([]string, 0, len(fields))
+	vals := make([]any, 0, len(fields))
+	for _, f := range filamentWritableFields {
+		if v, ok := fields[f]; ok {
+			cols = append(cols, f)
+			vals = append(vals, v)
+		}
+	}
+	placeholders := strings.Repeat("?,", len(cols))
+	if len(placeholders) > 0 {
+		placeholders = placeholders[:len(placeholders)-1]
+	}
+	stmt := fmt.Sprintf(
+		"INSERT INTO filaments (%s) VALUES (%s)",
+		strings.Join(cols, ", "),
+		placeholders,
+	)
+	return stmt, vals
+}
+
+// buildUpdateQuery creates an UPDATE statement and arguments for the given fields and id.
+func buildUpdateQuery(fields map[string]any, id int64) (string, []any) {
+	assignments := make([]string, 0, len(fields))
+	vals := make([]any, 0, len(fields)+1)
+	for _, f := range filamentWritableFields {
+		if v, ok := fields[f]; ok {
+			assignments = append(assignments, f+" = ?")
+			vals = append(vals, v)
+		}
+	}
+	vals = append(vals, id)
+
+	stmt := fmt.Sprintf("UPDATE filaments SET %s WHERE id = ?", strings.Join(assignments, ", "))
+	return stmt, vals
+}
+
 // filamentSchema is the CREATE TABLE statement for the filaments table.
 // Matches the Python reference exactly (filament.py _SCHEMA).
 const filamentSchema = `
@@ -280,21 +318,7 @@ func migrateFilaments(db *sql.DB, log *slog.Logger) error {
 // seedDefaultFilaments inserts the four built-in filament profiles.
 func seedDefaultFilaments(db *sql.DB, log *slog.Logger) error {
 	for _, profile := range defaultFilaments {
-		cols := make([]string, 0, len(filamentWritableFields))
-		vals := make([]any, 0, len(filamentWritableFields))
-		for _, f := range filamentWritableFields {
-			if v, ok := profile[f]; ok {
-				cols = append(cols, f)
-				vals = append(vals, v)
-			}
-		}
-		placeholders := strings.Repeat("?,", len(cols))
-		placeholders = placeholders[:len(placeholders)-1]
-		stmt := fmt.Sprintf(
-			"INSERT INTO filaments (%s) VALUES (%s)",
-			strings.Join(cols, ", "),
-			placeholders,
-		)
+		stmt, vals := buildInsertQuery(profile)
 		if _, err := db.Exec(stmt, vals...); err != nil {
 			return fmt.Errorf("seed profile %q: %w", profile["name"], err)
 		}
@@ -339,22 +363,7 @@ func (d *DB) CreateFilament(data map[string]any) (*FilamentProfile, error) {
 		return nil, fmt.Errorf("CreateFilament: name is required")
 	}
 
-	cols := make([]string, 0, len(safe))
-	vals := make([]any, 0, len(safe))
-	// Preserve field order for determinism.
-	for _, f := range filamentWritableFields {
-		if v, ok := safe[f]; ok {
-			cols = append(cols, f)
-			vals = append(vals, v)
-		}
-	}
-	placeholders := strings.Repeat("?,", len(cols))
-	placeholders = placeholders[:len(placeholders)-1]
-	stmt := fmt.Sprintf(
-		"INSERT INTO filaments (%s) VALUES (%s)",
-		strings.Join(cols, ", "),
-		placeholders,
-	)
+	stmt, vals := buildInsertQuery(safe)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -427,17 +436,7 @@ func (d *DB) UpdateFilament(id int64, data map[string]any) (*FilamentProfile, er
 		return d.GetFilament(id)
 	}
 
-	assignments := make([]string, 0, len(safe))
-	vals := make([]any, 0, len(safe)+1)
-	for _, f := range filamentWritableFields {
-		if v, ok := safe[f]; ok {
-			assignments = append(assignments, f+" = ?")
-			vals = append(vals, v)
-		}
-	}
-	vals = append(vals, id)
-
-	stmt := fmt.Sprintf("UPDATE filaments SET %s WHERE id = ?", strings.Join(assignments, ", "))
+	stmt, vals := buildUpdateQuery(safe, id)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
