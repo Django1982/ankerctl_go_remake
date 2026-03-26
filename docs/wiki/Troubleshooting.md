@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## Prerequisites
+
+Before troubleshooting, verify that the following are installed:
+
+- **ankerctl** binary or Docker image (see [Installation and Configuration](Installation-and-Configuration))
+- **ffmpeg** -- required for the timelapse feature. Docker images include it. For binary installs, install separately:
+  - Debian/Ubuntu: `sudo apt install ffmpeg`
+  - macOS: `brew install ffmpeg`
+  - Windows: download from [ffmpeg.org](https://ffmpeg.org/download.html)
+  - Verify: `ffmpeg -version`
+
+---
+
 ## Connection Issues
 
 ### Printer not found on LAN
@@ -86,7 +99,7 @@
 
 1. **Feature disabled.** Set `TIMELAPSE_ENABLED=true` in `.env` or enable via Setup tab.
 
-2. **ffmpeg not installed.** Timelapse requires ffmpeg. In Docker, it is included. For binary installs, install it separately.
+2. **ffmpeg not installed.** Timelapse requires ffmpeg for video encoding. In Docker, it is included. For binary installs, install it separately and verify with `ffmpeg -version`. See the [Prerequisites](#prerequisites) section above.
 
 3. **No active print.** Timelapse only records during prints. It starts automatically when a print begins and stops when it ends.
 

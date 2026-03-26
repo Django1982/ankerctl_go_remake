@@ -25,9 +25,18 @@ ankerctl communicates with AnkerMake M5 printers using three protocols: MQTT (cl
 
 Each MQTT message consists of:
 
-1. **Header** (63 bytes) -- Fixed-size, contains message type, command type, and metadata
+1. **Header** -- Fixed-size, contains message type, command type, and metadata
 2. **Body** -- AES-256-CBC encrypted JSON payload
 3. **Checksum** -- XOR checksum appended after encryption
+
+**Header size differs by printer model:**
+
+| Model | Header Size | Notes |
+|-------|-------------|-------|
+| AnkerMake M5 | 63 bytes | Original model, larger fixed header |
+| AnkerMake M5C | 24 bytes | Newer/compact model, smaller header |
+
+Both models use the same AES-256-CBC encryption with XOR checksum for the body. The protocol implementation must detect the printer model and use the correct header size for parsing and serialization.
 
 **Encryption:**
 - Algorithm: AES-256-CBC

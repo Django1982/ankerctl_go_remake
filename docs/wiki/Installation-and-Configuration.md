@@ -76,35 +76,37 @@ go build -o ankerctl ./cmd/ankerctl/
 
 ## Printer Setup
 
-### Import via Web UI (recommended)
+### Login with Anker Account (recommended)
 
-1. Start ankerctl (Docker, binary, or source)
+The simplest way to set up your printer is to log in with your AnkerMake account credentials.
+
+**Via Web UI:**
+
+1. Start ankerctl (binary, Docker, or source)
 2. Open [http://localhost:4470](http://localhost:4470)
-3. On the Setup tab, either:
-   - Upload your `login.json` file, or
-   - Log in with your AnkerMake email and password
+3. On the Setup tab, enter your AnkerMake email and password
 
-### Import via CLI
-
-```sh
-./ankerctl config import path/to/login.json
-```
-
-The `login.json` file can be found at:
-
-| Platform | Path |
-|----------|------|
-| macOS | `~/Library/Application Support/AnkerMake/AnkerMake_64bit_fp/login.json` |
-| Windows | `%APPDATA%\Roaming\eufyMake Studio Profile\cache\offline\user_info` |
-| Linux (Wine) | `~/.wine/drive_c/users/<name>/AppData/Roaming/eufyMake Studio Profile/cache/offline/user_info` |
-
-### Direct Login
+**Via CLI:**
 
 ```sh
 ./ankerctl config login DE
 ```
 
 You will be prompted for email and password. Replace `DE` with your country code.
+
+> **Note:** Legacy alternative -- if you already have a `login.json` file from the AnkerMake desktop app, you can import it via CLI as a backup method:
+>
+> ```sh
+> ./ankerctl config import path/to/login.json
+> ```
+>
+> The `login.json` file can be found at:
+>
+> | Platform | Path |
+> |----------|------|
+> | macOS | `~/Library/Application Support/AnkerMake/AnkerMake_64bit_fp/login.json` |
+> | Windows | `%APPDATA%\Roaming\eufyMake Studio Profile\cache\offline\user_info` |
+> | Linux (Wine) | `~/.wine/drive_c/users/<name>/AppData/Roaming/eufyMake Studio Profile/cache/offline/user_info` |
 
 ## API Key
 
@@ -140,7 +142,7 @@ See [`.env.example`](https://github.com/Django1982/ankerctl_go_remake/blob/main/
 | `ANKERCTL_HOST` / `FLASK_HOST` | `127.0.0.1` | Bind address |
 | `ANKERCTL_PORT` / `FLASK_PORT` | `4470` | Listen port |
 | `FLASK_SECRET_KEY` | *(auto)* | Session cookie secret |
-| `PRINTER_INDEX` | `0` | Active printer index (0-based) |
+| `PRINTER_INDEX` | `0` | Active printer index (0-based, only needed for multi-printer setups) |
 
 ### Upload
 
@@ -220,7 +222,7 @@ ankerctl implements the OctoPrint-compatible `/api/files/local` endpoint for fil
 
 ## Multiple Printers
 
-If you have multiple AnkerMake printers configured, select the active one:
+If you have multiple AnkerMake printers configured, you can select the active one with `PRINTER_INDEX`. Defaults to 0 (first printer), so this is only needed if you want to use a different printer.
 
 - **Environment variable:** `PRINTER_INDEX=1`
 - **CLI flag:** `./ankerctl webserver --printer-index 1`
