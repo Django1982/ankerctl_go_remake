@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -154,7 +155,7 @@ func TestPPPPService_Upload(t *testing.T) {
 					t.Fatal("expected error, got nil")
 				}
 				if tt.errContain != "" {
-					if !contains(err.Error(), tt.errContain) {
+					if !strings.Contains(err.Error(), tt.errContain) {
 						t.Fatalf("error %q does not contain %q", err.Error(), tt.errContain)
 					}
 				}
@@ -218,7 +219,7 @@ func TestPPPPService_Upload_ChannelError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected channel error, got nil")
 	}
-	if !contains(err.Error(), "channel") {
+	if !strings.Contains(err.Error(), "channel") {
 		t.Fatalf("error %q does not mention channel", err.Error())
 	}
 }
@@ -355,13 +356,13 @@ func TestPPPPService_Upload_AabbBeginContainsMetadata(t *testing.T) {
 	mu.Unlock()
 
 	// Metadata format: "type,name,size,md5,user_name,user_id,machine_id"
-	if !contains(meta, "meta_test.gcode") {
+	if !strings.Contains(meta, "meta_test.gcode") {
 		t.Errorf("AABB BEGIN metadata missing filename: %q", meta)
 	}
-	if !contains(meta, "carol") {
+	if !strings.Contains(meta, "carol") {
 		t.Errorf("AABB BEGIN metadata missing username: %q", meta)
 	}
-	if !contains(meta, "u3") {
+	if !strings.Contains(meta, "u3") {
 		t.Errorf("AABB BEGIN metadata missing user_id: %q", meta)
 	}
 }
@@ -461,15 +462,3 @@ func TestPPPPService_Upload_JSONHandshakePayload(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(sub) > 0 && len(s) >= len(sub) && searchSubstring(s, sub)
-}
-
-func searchSubstring(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
