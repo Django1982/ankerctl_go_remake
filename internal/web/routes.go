@@ -19,6 +19,7 @@ func (s *Server) registerRoutes() {
 	h.WithVideoChecker(s)
 	h.WithUnsupportedChecker(s)
 	h.WithShutdownTrigger(s)
+	h.WithUploadMaxBytes(s.maxUploadBytes)
 	if s.logRing != nil {
 		h.WithLogRing(s.logRing)
 	}
