@@ -62,6 +62,7 @@ type TemplateData struct {
 	UploadRateEnv       bool
 	UploadRateConfig    int
 	UploadRateSource    string
+	AccentColor         string
 }
 
 type Flash struct {

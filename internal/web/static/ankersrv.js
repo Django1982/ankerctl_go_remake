@@ -1,5 +1,46 @@
 $(function () {
     /**
+     * Apply accent color to UI and compute shades
+     */
+    function applyAccentColor(hex) {
+        if (!hex || typeof hex !== 'string' || !hex.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/)) {
+            return;
+        }
+
+        // Base color is var(--agreen2)
+        const baseColor = hex;
+
+        // Calculate lighter and darker shades for buttons/hover states
+        // A simple approach using CSS color-mix if supported, but for compatibility, we use hex math
+        let r = parseInt(hex.slice(1, 3), 16);
+        let g = parseInt(hex.slice(3, 5), 16);
+        let b = parseInt(hex.slice(5, 7), 16);
+
+        // Darker shade: --agreen1
+        const r1 = Math.max(0, Math.floor(r * 0.7));
+        const g1 = Math.max(0, Math.floor(g * 0.7));
+        const b1 = Math.max(0, Math.floor(b * 0.7));
+        const darkColor = "#" + [r1, g1, b1].map(x => x.toString(16).padStart(2, '0')).join('');
+
+        // Lighter shade: --agreen3
+        const r3 = Math.min(255, Math.floor(r * 1.2));
+        const g3 = Math.min(255, Math.floor(g * 1.2));
+        const b3 = Math.min(255, Math.floor(b * 1.2));
+        const lightColor = "#" + [r3, g3, b3].map(x => x.toString(16).padStart(2, '0')).join('');
+
+        document.documentElement.style.setProperty('--agreen1', darkColor);
+        document.documentElement.style.setProperty('--agreen2', baseColor);
+        document.documentElement.style.setProperty('--agreen3', lightColor);
+
+        // Update footer link colors RGB
+        document.documentElement.style.setProperty('--bs-link-color-rgb', `${r}, ${g}, ${b}`);
+    }
+
+    if (typeof initialAccentColor !== 'undefined' && initialAccentColor) {
+        applyAccentColor(initialAccentColor);
+    }
+
+    /**
      * Updates the Copywrite year on document ready
      */
     $("#copyYear").text(new Date().getFullYear());
@@ -2363,6 +2404,63 @@ $(function () {
         });
 
         loadMqttSettings();
+    }
+
+    /**
+     * Appearance Settings
+     */
+    const appearanceForm = $("#appearance-form");
+    if (appearanceForm.length) {
+        const picker = document.getElementById("appearance-color-picker");
+        const saveBtn = document.getElementById("appearance-save");
+
+        // Live preview
+        if (picker) {
+            picker.addEventListener("input", function(e) {
+                applyAccentColor(e.target.value);
+            });
+        }
+
+        // Preset buttons
+        $(".appearance-preset-btn").on("click", function() {
+            const hex = $(this).data("color");
+            if (picker && hex) {
+                picker.value = hex;
+                applyAccentColor(hex);
+            }
+        });
+
+        if (saveBtn) {
+            saveBtn.addEventListener("click", async function() {
+                const btn = $(this);
+                btn.prop("disabled", true);
+
+                const hex = picker ? picker.value : "";
+
+                try {
+                    const resp = await fetch("/api/settings/appearance", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            appearance: { accent_color: hex }
+                        })
+                    });
+
+                    if (resp.ok) {
+                        flash_message("Appearance settings saved", "success");
+                        // Apply immediately in case it wasn't already previewing
+                        applyAccentColor(hex);
+                    } else {
+                        const data = await resp.json().catch(() => ({}));
+                        flash_message(`Failed to save: ${data.error || resp.statusText}`, "danger");
+                    }
+                } catch (err) {
+                    flash_message(`Error: ${err.message}`, "danger");
+                } finally {
+                    btn.prop("disabled", false);
+                }
+            });
+        }
     }
 
     /**

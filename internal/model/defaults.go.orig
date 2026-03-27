@@ -112,11 +112,6 @@ type FilamentServiceConfig struct {
 	ManualSwapPreheatTempC int  `json:"manual_swap_preheat_temp_c"`
 }
 
-// AppearanceConfig holds appearance/theming settings.
-type AppearanceConfig struct {
-	AccentColor string `json:"accent_color"`
-}
-
 // filamentServiceManualSwapMinTempC and filamentServiceManualSwapMaxTempC are the
 // clamp bounds for ManualSwapPreheatTempC.
 const (
@@ -213,14 +208,6 @@ func DefaultFilamentServiceConfig() FilamentServiceConfig {
 	return FilamentServiceConfig{
 		AllowLegacySwap:        envBool("FILAMENT_ALLOW_LEGACY_SWAP", false),
 		ManualSwapPreheatTempC: temp,
-	}
-}
-
-// DefaultAppearanceConfig returns the default appearance configuration.
-// The default accent color is Anker green (#88f387).
-func DefaultAppearanceConfig() AppearanceConfig {
-	return AppearanceConfig{
-		AccentColor: "#88f387",
 	}
 }
 

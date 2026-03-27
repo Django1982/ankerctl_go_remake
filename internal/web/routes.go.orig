@@ -80,8 +80,6 @@ func (s *Server) registerRoutes() {
 	r.Post("/api/settings/mqtt", h.SettingsMQTTUpdate)
 	r.Get("/api/settings/filament-service", h.SettingsFilamentServiceGet)
 	r.Post("/api/settings/filament-service", h.SettingsFilamentServiceUpdate)
-	r.Get("/api/settings/appearance", h.SettingsAppearanceGet)
-	r.Post("/api/settings/appearance", h.SettingsAppearanceUpdate)
 
 	// History
 	r.Get("/api/history", h.HistoryList)
