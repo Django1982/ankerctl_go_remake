@@ -15,6 +15,9 @@ cd ankerctl_go_remake
 # Install pre-commit hooks (blocks direct commits to main)
 sh scripts/install-hooks.sh
 
+# Download vendor assets (Bootstrap, Chart.js etc.) — REQUIRED before first build
+bash scripts/prepare-web-vendor.sh
+
 # Build
 go build -o ankerctl ./cmd/ankerctl/
 
@@ -24,6 +27,8 @@ go test ./...
 # Vet
 go vet ./...
 ```
+
+> **Why `prepare-web-vendor.sh`?** The binary embeds all frontend assets via `//go:embed static/*`. The vendor libraries (Bootstrap, Chart.js, jMuxer, Cash.js) are not checked into git but downloaded from CDN by this script. Skipping it results in a blank web UI. Run it once after cloning, and again after pulling if `scripts/prepare-web-vendor.sh` changed.
 
 ## Git Workflow
 
