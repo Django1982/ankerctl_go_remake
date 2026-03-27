@@ -48,6 +48,7 @@ func (h *Handler) Root(w http.ResponseWriter, r *http.Request) {
 		}
 		data.PrinterList = pl
 		data.UploadRateConfig = cfg.UploadRateMbps
+		data.AccentColor = cfg.Appearance.AccentColor
 		data.AnkerConfig = configShow(cfg)
 		if cfg.Account != nil {
 			data.ConfigExistingEmail = cfg.Account.Email

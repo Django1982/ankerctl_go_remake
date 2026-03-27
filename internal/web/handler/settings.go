@@ -110,3 +110,48 @@ func (h *Handler) SettingsMQTTUpdate(w http.ResponseWriter, r *http.Request) {
 
 	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "home_assistant": updated})
 }
+
+// SettingsAppearanceGet returns the appearance settings.
+func (h *Handler) SettingsAppearanceGet(w http.ResponseWriter, _ *http.Request) {
+	cfg, _ := h.loadConfig()
+	var app model.AppearanceConfig
+	if cfg != nil {
+		app = cfg.Appearance
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"appearance": app})
+}
+
+// SettingsAppearanceUpdate updates the appearance settings.
+func (h *Handler) SettingsAppearanceUpdate(w http.ResponseWriter, r *http.Request) {
+	var payload map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+	appPayload := payload
+	if raw, ok := payload["appearance"]; ok {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			h.writeError(w, http.StatusBadRequest, "Invalid appearance payload")
+			return
+		}
+		appPayload = m
+	}
+
+	var updated model.AppearanceConfig
+	err := h.cfg.Modify(func(cfg *model.Config) (*model.Config, error) {
+		if cfg == nil {
+			return cfg, nil
+		}
+		updated = cfg.Appearance
+		mergeIntoStruct(&updated, appPayload)
+		cfg.Appearance = updated
+		return cfg, nil
+	})
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to update appearance settings")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "appearance": updated})
+}

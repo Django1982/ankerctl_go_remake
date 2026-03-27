@@ -33,6 +33,13 @@
                             <i class="bi-bell px-1"></i> Notifications
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="setup-appearance-tab" data-bs-toggle="pill"
+                            data-bs-target="#setup-appearance-pane" type="button" role="tab"
+                            aria-controls="setup-appearance-pane" aria-selected="false">
+                            <i class="bi-palette px-1"></i> Appearance
+                        </button>
+                    </li>
                     {{if .VideoSupported}}
                     <li class="nav-item" role="presentation">
                         <button class="nav-link" id="setup-timelapse-tab" data-bs-toggle="pill"
@@ -591,6 +598,39 @@
                                     </div>
                                     <div class="form-text">Environment variables (<code>APPRISE_*</code>) override these
                                         values.</div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ===== APPEARANCE TAB ===== -->
+                    <div class="tab-pane fade" id="setup-appearance-pane" role="tabpanel"
+                        aria-labelledby="setup-appearance-tab">
+                        <div class="card">
+                            <div class="card-header fs-4">Appearance Settings</div>
+                            <div class="card-body">
+                                <form id="appearance-form" class="vstack gap-3">
+                                    <div>
+                                        <label class="form-label" for="appearance-color-picker">Accent Color</label>
+                                        <div class="d-flex align-items-center gap-3">
+                                            <input type="color" class="form-control form-control-color" id="appearance-color-picker" value="{{.AccentColor}}" title="Choose your color">
+
+                                            <div class="btn-group" role="group" aria-label="Preset Colors">
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#88f387" style="background-color: #88f387; border-color: #88f387;" title="Anker Green"></button>
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#0d6efd" style="background-color: #0d6efd; border-color: #0d6efd;" title="Blue"></button>
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#6f42c1" style="background-color: #6f42c1; border-color: #6f42c1;" title="Purple"></button>
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#d63384" style="background-color: #d63384; border-color: #d63384;" title="Pink"></button>
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#ffc107" style="background-color: #ffc107; border-color: #ffc107;" title="Yellow"></button>
+                                                <button type="button" class="btn btn-outline-secondary appearance-preset-btn" data-color="#dc3545" style="background-color: #dc3545; border-color: #dc3545;" title="Red"></button>
+                                            </div>
+                                        </div>
+                                        <div class="form-text mt-2">
+                                            Customize the UI accent color. You can use the color picker or choose from a preset.
+                                        </div>
+                                    </div>
+                                    <div class="mt-2">
+                                        <button class="btn btn-primary" type="button" id="appearance-save">Save</button>
+                                    </div>
                                 </form>
                             </div>
                         </div>
