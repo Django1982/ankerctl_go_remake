@@ -70,6 +70,10 @@ Requires Go 1.22 or later.
 ```sh
 git clone https://github.com/Django1982/ankerctl_go_remake.git
 cd ankerctl_go_remake
+
+# Download vendor assets — required before building, otherwise blank web UI!
+bash scripts/prepare-web-vendor.sh
+
 go build -o ankerctl ./cmd/ankerctl/
 ./ankerctl webserver
 ```
