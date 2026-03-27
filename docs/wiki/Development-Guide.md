@@ -16,7 +16,10 @@ cd ankerctl_go_remake
 sh scripts/install-hooks.sh
 
 # Download vendor assets (Bootstrap, Chart.js etc.) — REQUIRED before first build
+# Linux/macOS:
 bash scripts/prepare-web-vendor.sh
+# Windows (PowerShell):
+# .\scripts\prepare-web-vendor.ps1
 
 # Build
 go build -o ankerctl ./cmd/ankerctl/

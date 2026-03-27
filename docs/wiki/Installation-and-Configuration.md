@@ -72,7 +72,10 @@ git clone https://github.com/Django1982/ankerctl_go_remake.git
 cd ankerctl_go_remake
 
 # Download vendor assets — required before building, otherwise blank web UI!
+# Linux/macOS:
 bash scripts/prepare-web-vendor.sh
+# Windows (PowerShell):
+# .\scripts\prepare-web-vendor.ps1
 
 go build -o ankerctl ./cmd/ankerctl/
 ./ankerctl webserver

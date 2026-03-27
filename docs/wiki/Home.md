@@ -48,13 +48,16 @@ git clone https://github.com/Django1982/ankerctl_go_remake.git
 cd ankerctl_go_remake
 
 # Download vendor assets (Bootstrap, Chart.js etc.) — required before building!
+# Linux/macOS:
 bash scripts/prepare-web-vendor.sh
+# Windows (PowerShell):
+# .\scripts\prepare-web-vendor.ps1
 
 go build -o ankerctl ./cmd/ankerctl/
 ./ankerctl webserver --listen 0.0.0.0:4470
 ```
 
-> **Note:** Without `prepare-web-vendor.sh` the web UI will be a blank page. The script downloads frontend vendor libraries from CDN and embeds them into the binary via `//go:embed`.
+> **Note:** Without the vendor script the web UI will be a blank page. The script downloads frontend vendor libraries from CDN and embeds them into the binary via `//go:embed`.
 
 Navigate to [http://localhost:4470](http://localhost:4470) and log in with your AnkerMake email and password.
 
