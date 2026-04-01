@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -398,5 +399,11 @@ func (c *Client) notifyURL() string {
 	if !strings.HasSuffix(base, "/notify") {
 		base += "/notify"
 	}
-	return base + "/" + key
+	full := base + "/" + key
+	u, err := url.Parse(full)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		slog.Warn("Apprise server URL has unsupported scheme, ignoring", "url", full)
+		return ""
+	}
+	return full
 }

@@ -19,7 +19,10 @@ func Encrypt(plaintext, key, iv []byte) ([]byte, error) {
 		return nil, fmt.Errorf("crypto: create AES cipher: %w", err)
 	}
 
-	padded := pkcs7Pad(plaintext, aes.BlockSize)
+	padded, err2 := pkcs7Pad(plaintext, aes.BlockSize)
+	if err2 != nil {
+		return nil, fmt.Errorf("crypto: %w", err2)
+	}
 	ciphertext := make([]byte, len(padded))
 
 	mode := cipher.NewCBCEncrypter(block, iv)
@@ -71,14 +74,19 @@ func MQTTDecrypt(ciphertext, key []byte) ([]byte, error) {
 
 // pkcs7Pad pads src to a multiple of blockSize using PKCS7.
 // blockSize must be between 1 and 255.
-func pkcs7Pad(src []byte, blockSize int) []byte {
+// Returns an error if src exceeds the maximum allowed input size.
+func pkcs7Pad(src []byte, blockSize int) ([]byte, error) {
+	const maxPadInput = 64 * 1024 * 1024 // 64 MiB — safe upper bound for AES payloads
+	if len(src) > maxPadInput {
+		return nil, fmt.Errorf("pkcs7Pad: input too large: %d bytes (max %d)", len(src), maxPadInput)
+	}
 	padding := blockSize - (len(src) % blockSize)
 	padded := make([]byte, len(src)+padding)
 	copy(padded, src)
 	for i := len(src); i < len(padded); i++ {
 		padded[i] = byte(padding)
 	}
-	return padded
+	return padded, nil
 }
 
 // pkcs7Unpad removes PKCS7 padding from src. Returns an error if the padding

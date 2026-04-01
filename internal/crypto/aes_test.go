@@ -171,7 +171,10 @@ func TestPKCS7Pad(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			padded := pkcs7Pad(tc.input, tc.blockSize)
+			padded, err := pkcs7Pad(tc.input, tc.blockSize)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if len(padded) != tc.wantLen {
 				t.Errorf("padded length = %d, want %d", len(padded), tc.wantLen)
 			}
