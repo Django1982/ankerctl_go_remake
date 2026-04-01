@@ -632,6 +632,10 @@ type VideoFrame struct {
 }
 
 func (x Xzyh) MarshalBinary() ([]byte, error) {
+	const maxXzyhPayload = 2 * 1024 * 1024 // 2 MiB — practical PPPP payload ceiling
+	if len(x.Data) > maxXzyhPayload {
+		return nil, fmt.Errorf("pppp: xzyh payload too large: %d bytes", len(x.Data))
+	}
 	if x.Len == 0 {
 		x.Len = uint32(len(x.Data))
 	}
