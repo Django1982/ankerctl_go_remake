@@ -34,6 +34,12 @@ func NewSessionManager(secretKey []byte) *SessionManager {
 	}
 }
 
+// isSecureRequest reports whether the request was made over HTTPS, either
+// directly (r.TLS != nil) or via a reverse proxy that sets X-Forwarded-Proto.
+func isSecureRequest(r *http.Request) bool {
+	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+}
+
 // SetAuthenticated sets or clears the authenticated session cookie.
 func (sm *SessionManager) SetAuthenticated(w http.ResponseWriter, r *http.Request, value bool) {
 	if !value {
@@ -44,7 +50,7 @@ func (sm *SessionManager) SetAuthenticated(w http.ResponseWriter, r *http.Reques
 			MaxAge:   -1,
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
-			Secure:   false,
+			Secure:   isSecureRequest(r),
 		})
 		return
 	}
@@ -61,7 +67,7 @@ func (sm *SessionManager) SetAuthenticated(w http.ResponseWriter, r *http.Reques
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   false,
+		Secure:   isSecureRequest(r),
 	})
 }
 
