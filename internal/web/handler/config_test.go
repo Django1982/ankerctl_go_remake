@@ -49,6 +49,16 @@ func TestConfigLogin_MissingParameters(t *testing.T) {
 			wantBody:   "missing login parameters",
 		},
 		{
+			name: "missing region",
+			formData: url.Values{
+				"login_email":    {"user@example.com"},
+				"login_password": {"secret"},
+				"login_country":  {"US"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "missing login parameters",
+		},
+		{
 			name: "all empty strings",
 			formData: url.Values{
 				"login_email":    {""},
@@ -73,6 +83,34 @@ func TestConfigLogin_MissingParameters(t *testing.T) {
 			}
 			if !strings.Contains(rr.Body.String(), tc.wantBody) {
 				t.Errorf("body = %q, want to contain %q", rr.Body.String(), tc.wantBody)
+			}
+		})
+	}
+}
+
+func TestResolveLoginRegion(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "US", input: "us", want: "us"},
+		{name: "EU", input: "EU", want: "eu"},
+		{name: "trims whitespace", input: " eu ", want: "eu"},
+		{name: "country code is not a region", input: "DE", wantErr: true},
+		{name: "missing", input: "", wantErr: true},
+		{name: "unsupported", input: "apac", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveLoginRegion(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("resolveLoginRegion(%q) error = %v, wantErr %v", tc.input, err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("resolveLoginRegion(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}
