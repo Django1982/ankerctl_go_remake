@@ -58,22 +58,17 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("login_email")
 	password := r.FormValue("login_password")
 	country := r.FormValue("login_country")
+	region, err := resolveLoginRegion(r.FormValue("login_region"))
 	captchaID := r.FormValue("login_captcha_id")
 	captchaText := r.FormValue("login_captcha_text")
-	if email == "" || password == "" || country == "" {
+	if email == "" || password == "" || country == "" || err != nil {
 		h.writeError(w, http.StatusBadRequest, "missing login parameters")
 		return
 	}
 
 	ctx := r.Context()
 
-	// Step 1: Detect region if not explicitly provided.
-	region := country
-	if region != "eu" && region != "us" {
-		region = httpapi.GuessRegion()
-	}
-
-	// Step 2: Login via ECDH-encrypted API.
+	// Step 1: Login via ECDH-encrypted API.
 	passportCfg := httpapi.ClientConfig{Region: region}
 	passport, err := httpapi.NewPassportV2(passportCfg)
 	if err != nil {
@@ -238,6 +233,18 @@ func (h *Handler) ConfigLogin(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("cloud login successful", "email", logging.RedactEmail(email), "region", region)
 	h.writeJSON(w, http.StatusOK, map[string]string{"redirect": "/api/ankerctl/server/reload"})
+}
+
+// resolveLoginRegion validates the explicitly selected Anker cloud region.
+// Account region cannot be inferred from the network location of this server.
+func resolveLoginRegion(value string) (string, error) {
+	region := strings.ToLower(strings.TrimSpace(value))
+	switch region {
+	case "eu", "us":
+		return region, nil
+	default:
+		return "", fmt.Errorf("invalid login region")
+	}
 }
 
 // fdmSNs returns the list of station_sn values from the FDM list response.
