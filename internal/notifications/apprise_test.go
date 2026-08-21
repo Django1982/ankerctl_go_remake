@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -283,6 +285,109 @@ func TestProgressNotification_MaxValueCap(t *testing.T) {
 	defer mu.Unlock()
 	if sendCount != 2 {
 		t.Fatalf("expected 2 progress notifications (max_value=2), got %d", sendCount)
+	}
+}
+
+// notifyURL / isPrivateHost / isRestrictedIP guard against SSRF: an admin
+// pointing the Apprise server URL at an internal service or cloud metadata
+// endpoint must be blocked. These are exercised directly since they're the
+// sanitizer CodeQL's go/request-forgery query flags at the http.Do call
+// sites (see security/code-scanning alerts #12, #13) — a real, injectable
+// mitigation exists, but had no test coverage proving it holds.
+
+func TestNotifyURL_RejectsUnsupportedScheme(t *testing.T) {
+	for _, scheme := range []string{"ftp", "file", "gopher", "javascript"} {
+		cfg := testAppriseConfig(scheme + "://notify.example.com")
+		client := newTestClient(cfg)
+		if u := client.notifyURL(); u != nil {
+			t.Fatalf("scheme %q: expected nil URL, got %v", scheme, u)
+		}
+	}
+}
+
+func TestNotifyURL_RejectsPrivateLiteralIP(t *testing.T) {
+	for _, host := range []string{
+		"127.0.0.1",       // loopback
+		"169.254.169.254", // link-local / cloud IMDS
+		"10.0.0.5",        // RFC1918
+		"192.168.1.1",     // RFC1918
+		"172.16.0.1",      // RFC1918
+		"224.0.0.1",       // link-local multicast
+	} {
+		cfg := testAppriseConfig("http://" + host)
+		client := newTestClient(cfg)
+		if u := client.notifyURL(); u != nil {
+			t.Fatalf("host %q: expected nil URL, got %v", host, u)
+		}
+	}
+}
+
+func TestNotifyURL_RejectsLocalhostAndDotLocal(t *testing.T) {
+	for _, host := range []string{"localhost", "printer.local", "LOCALHOST"} {
+		cfg := testAppriseConfig("http://" + host)
+		client := newTestClient(cfg)
+		if u := client.notifyURL(); u != nil {
+			t.Fatalf("host %q: expected nil URL, got %v", host, u)
+		}
+	}
+}
+
+func TestNotifyURL_RejectsDNSRebindingToPrivateIP(t *testing.T) {
+	cfg := testAppriseConfig("http://attacker.example.com")
+	client := newTestClient(cfg)
+	client.lookupHost = func(_ string) ([]string, error) {
+		return []string{"10.0.0.5"}, nil // hostname resolves to an internal address
+	}
+	if u := client.notifyURL(); u != nil {
+		t.Fatalf("expected nil URL for hostname resolving to private IP, got %v", u)
+	}
+}
+
+func TestNotifyURL_FailsClosedOnDNSError(t *testing.T) {
+	cfg := testAppriseConfig("http://does-not-resolve.example.com")
+	client := newTestClient(cfg)
+	client.lookupHost = func(_ string) ([]string, error) {
+		return nil, errors.New("dns lookup failed")
+	}
+	if u := client.notifyURL(); u != nil {
+		t.Fatalf("expected nil URL when DNS lookup fails, got %v", u)
+	}
+}
+
+func TestNotifyURL_AllowsPublicHTTPSHost(t *testing.T) {
+	cfg := testAppriseConfig("https://notify.example.com")
+	client := newTestClient(cfg)
+	u := client.notifyURL()
+	if u == nil {
+		t.Fatal("expected non-nil URL for public host")
+	}
+	if got, want := u.String(), "https://notify.example.com/notify/test-key"; got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+}
+
+func TestIsRestrictedIP(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"10.1.2.3", true},
+		{"172.31.255.255", true},
+		{"192.168.0.1", true},
+		{"169.254.1.1", true},
+		{"8.8.8.8", false},
+		{"93.184.216.34", false},
+	}
+	for _, tc := range cases {
+		ip := net.ParseIP(tc.ip)
+		if ip == nil {
+			t.Fatalf("bad test IP %q", tc.ip)
+		}
+		if got := isRestrictedIP(ip); got != tc.want {
+			t.Errorf("isRestrictedIP(%q) = %v, want %v", tc.ip, got, tc.want)
+		}
 	}
 }
 
