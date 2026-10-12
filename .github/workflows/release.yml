@@ -142,7 +142,7 @@ jobs:
             tar -C package -czf "$name.tar.gz" .
           fi
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ankerctl-${{ matrix.suffix }}
           path: |
