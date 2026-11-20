@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html data-bs-theme="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1" name="viewport" />
+    <title>ankerctl - Log in</title>
+    <link rel="icon" href="/static/img/logo.svg">
+    <link rel="stylesheet" href="/static/vendor/bootstrap-5.3.0-alpha3-dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/static/ankersrv.css" />
+</head>
+
+<body class="d-flex align-items-center justify-content-center" style="min-height: 100vh;">
+    <div class="container" style="max-width: 420px;">
+        <div class="text-center mb-4">
+            <img src="/static/img/logo.svg" height="48" alt="logo">
+            <h1 class="fs-4 mt-2">ankerctl</h1>
+        </div>
+        <div class="card">
+            <div class="card-header fs-5">Log in</div>
+            <div class="card-body">
+                {{if .Error}}
+                <div class="alert alert-danger" role="alert">{{.Error}}</div>
+                {{end}}
+                <form method="POST" action="/login?next={{.Next}}">
+                    <div class="mb-3">
+                        <label class="form-label" for="username">Username</label>
+                        <input class="form-control" type="text" id="username" name="username" autofocus required />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="password">Password</label>
+                        <input class="form-control" type="password" id="password" name="password" required />
+                    </div>
+                    <button class="btn btn-secondary w-100" type="submit">Log in</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>

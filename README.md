@@ -151,6 +151,33 @@ For Docker, set `ANKERCTL_API_KEY` in your `.env` file.
 - **No key set** = no authentication (backwards compatible, default behavior)
 - The WebUI is always readable (status, video, etc.) -- the key is only required for write operations
 
+### Browser Login
+
+Separate from the API key above, you can require a username/password login
+for the whole WebUI by setting `ANKERCTL_WEB_USERNAME` and
+`ANKERCTL_WEB_PASSWORD_HASH` (a bcrypt hash -- the same format Caddy's
+`caddy hash-password` / `basic_auth` directive produces, so an existing
+reverse-proxy hash can be reused directly). It sets a signed session cookie
+after a normal form login, with brute-force lockout
+(`ANKERCTL_WEB_LOGIN_MAX_ATTEMPTS` / `ANKERCTL_WEB_LOGIN_LOCKOUT_SECONDS`,
+default 5 attempts / 5 minutes).
+
+Use this instead of putting HTTP Basic Auth in front of ankerctl in your
+reverse proxy. This app keeps several WebSockets open at once
+(`/ws/mqtt`, `/ws/ctrl`, `/ws/pppp-state`, `/ws/video`) and polls a number of
+JSON endpoints every time you switch tabs. Browsers cannot attach a cached
+Basic Auth credential to a WebSocket handshake, and *any* `401` response
+carrying `WWW-Authenticate` -- not just a page navigation, a background
+XHR or WS handshake too -- re-triggers the browser's native login dialog.
+With this much background traffic, that means a login prompt on almost
+every click. A normal session cookie doesn't have that problem: it's sent
+automatically on every request, including WebSocket upgrades.
+
+The API key and the browser login are independent: the API key
+authenticates individual write requests from machines (slicers, scripts);
+the browser login authenticates a human's whole session. You can use
+either, both, or neither.
+
 ### Printing from PrusaSlicer
 
 ankerctl is compatible with PrusaSlicer and its derivatives (OrcaSlicer, SuperSlicer, Bamboo Studio). Configure a new printer with:
@@ -176,6 +203,10 @@ See [`.env.example`](.env.example) for a complete, commented template.
 | `UPLOAD_RATE_MBPS` | `10` | Upload speed (Mbit/s): 5, 10, 25, 50, 100 |
 | **Security** | | |
 | `ANKERCTL_API_KEY` | *(unset)* | API key for write operations |
+| `ANKERCTL_WEB_USERNAME` | *(unset)* | Browser login username |
+| `ANKERCTL_WEB_PASSWORD_HASH` | *(unset)* | Browser login password (bcrypt hash, same format as Caddy's `basic_auth`) |
+| `ANKERCTL_WEB_LOGIN_MAX_ATTEMPTS` | `5` | Failed login attempts before lockout |
+| `ANKERCTL_WEB_LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration in seconds |
 | **Features** | | |
 | `ANKERCTL_DEV_MODE` | `false` | Enable debug endpoints |
 | `ANKERCTL_LOG_DIR` | *(unset)* | Log file directory |

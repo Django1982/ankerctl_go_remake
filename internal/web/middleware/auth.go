@@ -64,6 +64,16 @@ type AuthState interface {
 func Auth(state AuthState) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// /login and /logout are handled entirely by WebAuthGate (which
+			// runs before this middleware); they must stay reachable here
+			// regardless of API key state, or a configured API key would
+			// make the login form's own POST return 401 before it ever
+			// reaches the login handler.
+			if r.URL.Path == "/login" || r.URL.Path == "/logout" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			apiKey := state.APIKey()
 			if apiKey == "" {
 				next.ServeHTTP(w, r)
@@ -151,6 +161,13 @@ func stripAPIKeyParam(u *url.URL) string {
 // isWebSocketUpgrade reports whether the request is a WebSocket upgrade.
 func isWebSocketUpgrade(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+}
+
+// SecureEquals is the exported form of secureEquals, for callers outside
+// this package (e.g. web.Server.VerifyWebCredentials) that need a
+// constant-time string comparison.
+func SecureEquals(a, b string) bool {
+	return secureEquals(a, b)
 }
 
 func secureEquals(a, b string) bool {
