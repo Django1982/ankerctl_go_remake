@@ -5,6 +5,7 @@ import (
 
 	"github.com/django1982/ankerctl/internal/service"
 	"github.com/django1982/ankerctl/internal/web/handler"
+	mw "github.com/django1982/ankerctl/internal/web/middleware"
 	"github.com/django1982/ankerctl/internal/web/ws"
 )
 
@@ -39,6 +40,20 @@ func (s *Server) registerRoutes() {
 	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/static/img/logo.svg", http.StatusMovedPermanently)
 	})
+
+	// Browser login (ANKERCTL_WEB_PASSWORD_HASH) - see middleware.WebAuthGate
+	// for why this exists instead of HTTP Basic Auth in a reverse proxy.
+	loginAttempts, lockout := webAuthLoginLimits()
+	lh := mw.NewLoginHandlers(s, loginAttempts, lockout, func(w http.ResponseWriter, next, errMsg string, status int) {
+		w.WriteHeader(status)
+		_ = s.templates.Render(w, "login.html", map[string]any{
+			"Next":  next,
+			"Error": errMsg,
+		})
+	})
+	r.Get("/login", lh.ShowLogin)
+	r.Post("/login", lh.HandleLogin)
+	r.Post("/logout", lh.HandleLogout)
 
 	// Page routes
 	r.Get("/", h.Root)

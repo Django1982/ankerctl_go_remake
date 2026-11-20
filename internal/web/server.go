@@ -62,6 +62,8 @@ type Server struct {
 	mu sync.RWMutex
 
 	apiKey             string
+	webAuthUsername    string
+	webAuthPasswordHash string
 	login              bool
 	printerIndex       int
 	printerIndexLocked bool
@@ -222,6 +224,7 @@ func (s *Server) Start(ctx context.Context) error {
 	r.Use(mw.BodySizeLimit(s.maxUploadBytes))
 	r.Use(mw.RequirePrinter(s))
 	r.Use(mw.BlockUnsupportedDevice(s))
+	r.Use(mw.WebAuthGate(s))
 	r.Use(mw.Auth(s))
 
 	s.router = r
@@ -272,6 +275,36 @@ func (s *Server) APIKey() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.apiKey
+}
+
+// WebAuthEnabled reports whether browser login is required, i.e. whether
+// ANKERCTL_WEB_PASSWORD_HASH is configured.
+func (s *Server) WebAuthEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.webAuthPasswordHash != ""
+}
+
+// VerifyWebCredentials checks a submitted username/password against the
+// configured ANKERCTL_WEB_USERNAME / ANKERCTL_WEB_PASSWORD_HASH. The
+// password hash uses bcrypt, the same format Caddy's basic_auth directive
+// expects, so operators can reuse the exact hash they already generated
+// with `caddy hash-password` for a previous reverse-proxy setup.
+func (s *Server) VerifyWebCredentials(username, password string) bool {
+	s.mu.RLock()
+	wantUser := s.webAuthUsername
+	hash := s.webAuthPasswordHash
+	s.mu.RUnlock()
+
+	if hash == "" || wantUser == "" {
+		return false
+	}
+	// Constant-time username comparison, then bcrypt for the password.
+	// Both checks always run so a timing difference can't reveal which
+	// one failed.
+	userOK := mw.SecureEquals(username, wantUser)
+	passOK := mw.VerifyBcryptPassword(hash, password)
+	return userOK && passOK
 }
 
 // IsLoggedIn reports whether a printer configuration is loaded.
@@ -408,6 +441,9 @@ func (s *Server) initialize() error {
 		}
 	}
 
+	s.webAuthUsername = strings.TrimSpace(os.Getenv("ANKERCTL_WEB_USERNAME"))
+	s.webAuthPasswordHash = strings.TrimSpace(os.Getenv("ANKERCTL_WEB_PASSWORD_HASH"))
+
 	secret, err := s.loadOrCreateSecretKey()
 	if err != nil {
 		return err
@@ -508,6 +544,25 @@ func envInt(key string) (int, bool) {
 		return 0, false
 	}
 	return parsed, true
+}
+
+// webAuthLoginLimits resolves the browser-login brute-force lockout
+// settings from the environment, falling back to 5 attempts / 5 minutes.
+func webAuthLoginLimits() (maxAttempts int, lockoutFor time.Duration) {
+	maxAttempts = 5
+	lockoutFor = 5 * time.Minute
+
+	if v := strings.TrimSpace(os.Getenv("ANKERCTL_WEB_LOGIN_MAX_ATTEMPTS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxAttempts = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("ANKERCTL_WEB_LOGIN_LOCKOUT_SECONDS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lockoutFor = time.Duration(n) * time.Second
+		}
+	}
+	return maxAttempts, lockoutFor
 }
 
 func makeModelSet(base map[string]struct{}, overrideCSV string) map[string]struct{} {
